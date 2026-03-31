@@ -1,0 +1,172 @@
+{% extends "base.html" %}
+{% block title %}תלמידים{% endblock %}
+
+{% block content %}
+<div class="students-page">
+  <div class="students-page__top mb-2">
+    <div class="d-flex flex-column flex-md-row flex-md-wrap align-items-stretch align-items-md-center justify-content-between gap-2 gap-md-3">
+      <div class="students-page__title-block min-w-0">
+        <h1 class="page-title mb-0"><i class="bi bi-people-fill me-2 text-primary"></i>תלמידים</h1>
+        <p class="text-muted mb-0 students-page-hint">אותו טלפון להורה = משפחה אחת · חיפוש מהיר למטה</p>
+      </div>
+      <div class="d-flex flex-wrap align-items-center gap-2 students-page__controls">
+        {% if student_families %}
+        <label class="visually-hidden" for="studentDirectorySearch">חיפוש תלמיד או הורה</label>
+        <div class="input-group students-search-group flex-grow-1">
+          <span class="input-group-text" aria-hidden="true"><i class="bi bi-search"></i></span>
+          <input type="search" id="studentDirectorySearch" class="form-control" placeholder="חיפוש שם / הורה / טלפון" autocomplete="off" />
+        </div>
+        {% endif %}
+        <a href="/students/new" class="btn btn-primary btn-sm px-3 text-nowrap" title="הוספת תלמיד חדש">
+          <i class="bi bi-person-plus-fill me-1"></i>חדש
+        </a>
+      </div>
+    </div>
+  </div>
+
+{% if student_families %}
+
+  <div id="studentsSearchEmpty" class="students-search-empty alert alert-light border text-center py-2 d-none" role="status" aria-live="polite">
+    לא נמצאו תלמידים התואמים לחיפוש
+  </div>
+
+  <div id="studentsDirectoryList" class="students-directory-list">
+{% for fam in student_families %}
+<section class="student-family-group {% if fam.is_multi %}student-family-group--multi{% else %}student-family-group--solo{% endif %}" data-student-search="{{ fam.search_blob|e }}">
+  {% if fam.is_multi %}
+  <div class="student-family-shell" aria-labelledby="student-fam-head-{{ loop.index }}">
+    <header class="student-family-shell__head" id="student-fam-head-{{ loop.index }}">
+      <div class="student-family-shell__head-row d-flex flex-wrap align-items-center justify-content-between gap-1 gap-md-2">
+        <div class="d-flex flex-wrap align-items-center gap-1 gap-md-2 min-w-0">
+          <span class="student-family-badge" title="משפחה — {{ fam.members|length }} תלמידים">
+            <i class="bi bi-house-heart" aria-hidden="true"></i><span class="ms-1">{{ fam.members|length }}</span>
+          </span>
+          {% if fam.phone_display %}
+          <a href="tel:{{ fam.phone_display }}" class="student-family-phone student-family-phone--compact text-truncate d-inline-flex align-items-center gap-1" style="max-width: 10rem">
+            <i class="bi bi-telephone flex-shrink-0" style="font-size:0.9em" aria-hidden="true"></i><span class="text-truncate">{{ fam.phone_display }}</span>
+          </a>
+          {% endif %}
+          {% set _fam_parent = fam.parent_names | join(' · ') %}
+          <a class="btn btn-outline-primary btn-sm student-family-quickadd text-nowrap"
+             href="/students/new?{% if fam.phone_display %}parent_phone={{ fam.phone_display|urlquote }}&amp;{% endif %}parent_name={{ _fam_parent|urlquote }}&amp;default_price={{ fam.members[0].default_price }}"
+             title="תלמיד חדש עם פרטי ההורה">
+            <i class="bi bi-person-plus" aria-hidden="true"></i><span class="d-none d-sm-inline ms-1">למשפחה</span>
+          </a>
+        </div>
+        <span class="student-family-same-label d-none d-lg-inline">משפחה</span>
+      </div>
+      {% if fam.parent_names %}
+      <p class="student-family-parents text-muted mb-0 mt-1 text-truncate" title="{{ _fam_parent|e }}">{{ _fam_parent }}</p>
+      {% endif %}
+    </header>
+    <div class="student-family-shell__body">
+      <div class="row g-2 student-cards-row">
+        {% for student in fam.members %}
+        <div class="col-12 col-sm-6 col-md-4 col-lg-3 col-xl-3 col-xxl-2">
+          <div class="student-card h-100 student-card--in-family">
+            <div class="d-flex justify-content-between align-items-start gap-1">
+              <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
+              <span class="price-tag flex-shrink-0">{{ student.default_price }}₪</span>
+            </div>
+            {% if student.notes %}
+            <div class="info-row text-truncate" title="{{ student.notes|e }}">
+              <i class="bi bi-sticky flex-shrink-0" aria-hidden="true"></i>
+              <span class="text-truncate">{{ student.notes }}</span>
+            </div>
+            {% endif %}
+            <div class="student-card__sched">
+              {% if student.schedules %}
+                {% for sched in student.schedules %}
+                <span class="schedule-badge text-truncate d-inline-block" style="max-width: 100%" title="יום {{ day_names[sched.day_of_week] }} {{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}">
+                  {{ day_names_short[sched.day_of_week] }} {{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}
+                </span>
+                {% endfor %}
+              {% else %}
+                <span class="text-muted student-card__no-sched">אין קבוע</span>
+              {% endif %}
+            </div>
+            <div class="mt-auto d-flex gap-1 student-card__actions">
+              <a href="/calendar?date={{ tomorrow_iso }}&amp;student={{ student.id }}" class="btn btn-success btn-sm flex-grow-1 text-truncate student-quick-tomorrow" title="שיעור חדש מחר">מחר</a>
+              <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 flex-shrink-0" title="שיעורים" aria-label="שיעורים"><i class="bi bi-list-ul" aria-hidden="true"></i></a>
+              <a href="/students/{{ student.id }}/edit" class="btn btn-outline-secondary btn-sm px-2 flex-shrink-0" title="עריכה" aria-label="עריכה"><i class="bi bi-pencil" aria-hidden="true"></i></a>
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  {% else %}
+  <div class="row g-2 student-cards-row">
+    {% for student in fam.members %}
+    <div class="col-12 col-sm-6 col-md-4 col-lg-3 col-xl-3 col-xxl-2">
+      <div class="student-card h-100">
+        <div class="d-flex justify-content-between align-items-start gap-1">
+          <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
+          <span class="price-tag flex-shrink-0">{{ student.default_price }}₪</span>
+        </div>
+        {% if student.parent_name or student.parent_phone %}
+        <div class="info-row d-flex flex-wrap align-items-center gap-1" style="min-width:0" title="{% if student.parent_name %}{{ student.parent_name|e }}{% endif %}{% if student.parent_phone %} {{ student.parent_phone }}{% endif %}">
+          <i class="bi bi-person flex-shrink-0" aria-hidden="true"></i>
+          {% if student.parent_name %}
+          <span class="text-truncate" style="min-width:0">{{ student.parent_name }}</span>
+          {% endif %}
+          {% if student.parent_phone %}
+          <a href="tel:{{ student.parent_phone }}" class="text-truncate student-card__parent-tel">{{ student.parent_phone }}</a>
+          {% endif %}
+        </div>
+        {% set _solo_parent = (student.parent_name or '')|trim %}
+        <a class="btn btn-outline-primary btn-sm student-family-quickadd student-card-solo-quickadd w-100 mt-1 text-truncate"
+           href="/students/new?{% if student.parent_phone %}parent_phone={{ student.parent_phone|urlquote }}&amp;{% endif %}parent_name={{ _solo_parent|urlquote }}&amp;default_price={{ student.default_price }}"
+           title="תלמיד חדש עם אותם פרטי הורה (אח/ות)">
+          <i class="bi bi-person-plus" aria-hidden="true"></i><span class="d-none d-sm-inline ms-1">למשפחה</span>
+        </a>
+        {% endif %}
+        {% if student.notes %}
+        <div class="info-row text-truncate" title="{{ student.notes|e }}">
+          <i class="bi bi-sticky flex-shrink-0" aria-hidden="true"></i>
+          <span class="text-truncate">{{ student.notes }}</span>
+        </div>
+        {% endif %}
+        <div class="student-card__sched">
+          {% if student.schedules %}
+            {% for sched in student.schedules %}
+            <span class="schedule-badge text-truncate d-inline-block" style="max-width: 100%" title="יום {{ day_names[sched.day_of_week] }} {{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}">
+              {{ day_names_short[sched.day_of_week] }} {{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}
+            </span>
+            {% endfor %}
+          {% else %}
+            <span class="text-muted student-card__no-sched">אין קבוע</span>
+          {% endif %}
+        </div>
+        <div class="mt-auto d-flex gap-1 student-card__actions">
+          <a href="/calendar?date={{ tomorrow_iso }}&amp;student={{ student.id }}" class="btn btn-success btn-sm flex-grow-1 text-truncate student-quick-tomorrow" title="שיעור חדש מחר">מחר</a>
+          <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 flex-shrink-0" title="שיעורים" aria-label="שיעורים"><i class="bi bi-list-ul" aria-hidden="true"></i></a>
+          <a href="/students/{{ student.id }}/edit" class="btn btn-outline-secondary btn-sm px-2 flex-shrink-0" title="עריכה" aria-label="עריכה"><i class="bi bi-pencil" aria-hidden="true"></i></a>
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+</section>
+{% endfor %}
+  </div>
+
+{% else %}
+<div class="text-center py-5 mt-4" style="color:var(--text-muted)">
+  <i class="bi bi-people" style="font-size:3.5rem; display:block; margin-bottom:1rem; opacity:.4"></i>
+  <p class="fs-5 mb-3">עדיין אין תלמידים רשומים</p>
+  <a href="/students/new" class="btn btn-primary btn-lg px-5">
+    <i class="bi bi-person-plus-fill me-2"></i>הוסיפי תלמיד/ה ראשון/ה
+  </a>
+</div>
+{% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+{% if student_families %}
+<script src="/static/js/students-directory.js?v={{ static_v('js/students-directory.js') }}"></script>
+{% endif %}
+{% endblock %}

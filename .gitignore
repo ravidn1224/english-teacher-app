@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+*.egg-info/
+dist/
+
+# Env / secrets (use env vars or docker overrides locally)
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Local DB dumps
+*.sql

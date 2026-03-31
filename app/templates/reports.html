@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}דוח תשלומים{% endblock %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+  <h1 class="page-title mb-0"><i class="bi bi-file-earmark-bar-graph me-2 text-primary"></i>דוח חובות</h1>
+  <div class="d-flex gap-2 flex-wrap no-print">
+    <a href="/reports/export.xlsx" class="btn btn-success">
+      <i class="bi bi-file-earmark-excel me-1"></i>ייצוא לאקסל
+    </a>
+    <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
+      <i class="bi bi-printer me-1"></i>הדפסה
+    </button>
+  </div>
+</div>
+
+<!-- Month context + teaching load (easy overview) -->
+<div class="reports-month-bar no-print mb-4">
+  <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+    <div class="d-flex flex-wrap align-items-center gap-2">
+      <a href="/reports/?month={{ prev_month_q }}" class="btn btn-outline-secondary rounded-pill px-3" title="חודש קודם">
+        <i class="bi bi-chevron-right"></i>
+      </a>
+      <form method="get" action="/reports/" class="d-flex align-items-center gap-2 mb-0">
+        <label class="visually-hidden" for="reportMonthPick">בחירת חודש</label>
+        <input type="month" id="reportMonthPick" name="month" value="{{ month_input }}" class="form-control form-control-lg report-month-input" onchange="this.form.submit()" />
+      </form>
+      <a href="/reports/?month={{ next_month_q }}" class="btn btn-outline-secondary rounded-pill px-3" title="חודש הבא">
+        <i class="bi bi-chevron-left"></i>
+      </a>
+    </div>
+    <div class="text-muted small fw-semibold">{{ report_month_label }}</div>
+  </div>
+</div>
+
+<div class="reports-stats-grid mb-4">
+  <div class="report-stat-card report-stat-card--hours">
+    <div class="report-stat-card__icon"><i class="bi bi-clock-history"></i></div>
+    <div>
+      <div class="report-stat-card__label">שעות הוראה בחודש</div>
+      <div class="report-stat-card__value">{{ month_hours_display }} <span class="report-stat-card__unit">שעות</span></div>
+      <div class="report-stat-card__sub">{{ month_lesson_count }} שיעורים מתוכננים / בוצעו (לא כולל בוטלים)</div>
+    </div>
+  </div>
+  <div class="report-stat-card report-stat-card--debt no-print">
+    <div class="report-stat-card__icon"><i class="bi bi-wallet2"></i></div>
+    <div>
+      <div class="report-stat-card__label">סה״כ לגבייה (כל החודשים)</div>
+      <div class="report-stat-card__value">{{ grand_total }} <span class="report-stat-card__unit">₪</span></div>
+      <div class="report-stat-card__sub">מפורט למטה לפי משפחות</div>
+    </div>
+  </div>
+</div>
+
+{% if families %}
+
+<div class="grand-total-bar">
+  <div>
+    <div class="gt-label"><i class="bi bi-exclamation-circle me-2"></i>סה"כ לגבייה</div>
+    <div style="font-size:.85rem; opacity:.75; margin-top:2px">{{ families | length }} משפחות עם חוב פתוח</div>
+  </div>
+  <div class="gt-amount">{{ grand_total }} ₪</div>
+</div>
+
+{% for key, data in families.items() %}
+<div class="family-card">
+
+  <div class="family-card-head">
+    <div>
+      <div class="fam-name">
+        <i class="bi bi-people-fill me-2"></i>{{ data.student_names | join(' &amp; ') }}
+      </div>
+      <div class="fam-contact">
+        {% if data.parent_name %}<span class="me-3"><i class="bi bi-person me-1"></i>{{ data.parent_name }}</span>{% endif %}
+        {% if data.parent_phone %}<a href="tel:{{ data.parent_phone }}" class="text-decoration-none" style="color:var(--text-muted)"><i class="bi bi-telephone me-1"></i>{{ data.parent_phone }}</a>{% endif %}
+      </div>
+    </div>
+    <div class="fam-total">{{ data.total }} ₪</div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="table table-hover mb-0 family-card">
+      <thead>
+        <tr>
+          <th>תאריך</th>
+          <th>תלמיד</th>
+          <th>שעות</th>
+          <th>מחיר</th>
+          <th>סטטוס</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for lesson in data.lessons %}
+        <tr>
+          <td class="fw-semibold">{{ lesson.lesson_date.strftime('%d/%m/%Y') }}</td>
+          <td>{{ lesson.student.first_name }} {{ lesson.student.last_name }}</td>
+          <td style="color:var(--text-muted)">{{ lesson.start_time.strftime('%H:%M') }} – {{ lesson.end_time.strftime('%H:%M') }}</td>
+          <td class="fw-bold">{{ lesson.price }} ₪</td>
+          <td>
+            {% if lesson.status == 'completed' %}
+              <span class="status-pill completed">הושלם</span>
+            {% else %}
+              <span class="status-pill scheduled">מתוכנן</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <td colspan="3">סה"כ לחיוב</td>
+          <td colspan="2" class="text-danger" style="font-size:1.05rem">{{ data.total }} ₪</td>
+        </tr>
+      </tfoot>
+    </table>
+  </div>
+
+</div>
+{% endfor %}
+
+{% else %}
+<div class="text-center py-5 mt-2 reports-empty-state">
+  <i class="bi bi-check-circle-fill text-success reports-empty-icon" aria-hidden="true"></i>
+  <p class="fs-4 fw-bold mb-1">הכל מסודר!</p>
+  <p class="fs-5 mb-0 text-muted">אין חובות פתוחים כרגע.</p>
+  <p class="small text-muted mt-3 mb-0">שעות ההוראה לחודש הנבחר מופיעות למעלה.</p>
+</div>
+{% endif %}
+
+{% endblock %}

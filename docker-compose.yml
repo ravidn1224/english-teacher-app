@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:16
+    container_name: teacher_db
+    restart: always
+    environment:
+      POSTGRES_USER: teacher
+      POSTGRES_PASSWORD: teacher123
+      POSTGRES_DB: teacherdb
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U teacher -d teacherdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: teacher_app
+    restart: always
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://teacher:teacher123@db:5432/teacherdb
+      # Docker bind mounts (especially on macOS) often break file watchers — polling fixes --reload
+      WATCHFILES_FORCE_POLLING: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ./app:/app/app
+
+volumes:
+  postgres_data:

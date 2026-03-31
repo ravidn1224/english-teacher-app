@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}{% if action == "new" %}תלמיד חדש{% else %}עריכת תלמיד{% endif %}{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+  <div class="col-lg-8">
+    <div class="card shadow-sm">
+      <div class="card-header bg-primary text-white fs-4">
+        <i class="bi bi-person-fill me-2"></i>
+        {% if action == "new" %}הוספת תלמיד חדש{% else %}עריכת פרטי תלמיד{% endif %}
+      </div>
+      <div class="card-body p-4">
+        {% if action == "new" and (prefill_parent_phone or prefill_parent_name) %}
+        <div class="alert alert-info py-2 px-3 small mb-3" role="status">
+          פרטי ההורה מולאו מהמשפחה — אפשר לערוך לפני השמירה.
+        </div>
+        {% endif %}
+        <form method="post" action="{% if action == 'new' %}/students/new{% else %}/students/{{ student.id }}/edit{% endif %}">
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label fs-5">שם פרטי *</label>
+              <input type="text" class="form-control form-control-lg" name="first_name"
+                     value="{{ student.first_name if student else '' }}" required />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fs-5">שם משפחה *</label>
+              <input type="text" class="form-control form-control-lg" name="last_name"
+                     value="{{ student.last_name if student else '' }}" required />
+            </div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label fs-5">שם הורה</label>
+              <input type="text" class="form-control form-control-lg" name="parent_name"
+                     value="{{ student.parent_name if student else (prefill_parent_name or '') }}" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fs-5">טלפון הורה</label>
+              <input type="tel" class="form-control form-control-lg" name="parent_phone"
+                     value="{{ student.parent_phone if student else (prefill_parent_phone or '') }}" />
+            </div>
+          </div>
+
+          <div class="row g-3 mb-3">
+            <div class="col-md-4">
+              <label class="form-label fs-5">מחיר ברירת מחדל לשיעור (₪)</label>
+              <input type="number" class="form-control form-control-lg" name="default_price" min="0"
+                     value="{% if student %}{{ student.default_price }}{% elif prefill_default_price is not none %}{{ prefill_default_price }}{% else %}0{% endif %}" />
+            </div>
+          </div>
+
+          <div class="mb-3">
+            <label class="form-label fs-5">הערות</label>
+            <textarea class="form-control" name="notes" rows="3">{{ student.notes if student else '' }}</textarea>
+          </div>
+
+          <div class="d-flex gap-3">
+            <button type="submit" class="btn btn-primary btn-lg">
+              <i class="bi bi-check-lg me-1"></i>שמור
+            </button>
+            <a href="{% if student %}/students/{{ student.id }}{% else %}/students/{% endif %}"
+               class="btn btn-secondary btn-lg">ביטול</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
