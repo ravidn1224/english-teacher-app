@@ -100,19 +100,39 @@
           <div id="detPaymentDetailsRow">
             <div id="detPayChargeAndBalance" class="mb-3 small text-body-secondary lh-lg" data-server-student-balance="0" data-lesson-balance-applied="0">
               <div class="mb-2">
-                <label class="form-label small text-muted mb-1" for="detLessonCharge">חיוב לשיעור (₪)</label>
+                <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-1">
+                  <label class="form-label small text-muted mb-0" for="detLessonCharge">חיוב לשיעור (₪)</label>
+                  <span id="detChargeTypeLabel" class="badge rounded-pill text-bg-light border"></span>
+                </div>
                 <input type="number" class="form-control" id="detLessonCharge" min="0" step="1" inputmode="numeric" autocomplete="off" />
               </div>
-              <div id="detStudentBalanceLine" class="fw-medium">יתרה נוכחית: ‎₪0 (חיובי = זיכוי, שלילי = חוב)</div>
+              <div id="detFamilyBalanceBadgeWrap" class="mb-2 min-h-badge"></div>
+              <div id="detSuggestedPayWrap" class="mb-2 d-none">
+                <span class="small text-muted me-2">לתשלום מוצע:</span>
+                <span id="detSuggestedPayBadge" class="badge rounded-pill bg-light text-dark border fw-semibold"></span>
+              </div>
+              <div id="detQuickPayRow" class="d-flex flex-wrap gap-2 mb-2 d-none" role="group" aria-label="סכומים מהירים">
+                <button type="button" class="btn btn-sm btn-outline-secondary det-quick-pay" data-amt-suggest="1">לפי הצעה</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary det-quick-pay" data-amt-charge="1">לפי חיוב</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary det-quick-pay" data-amt-zero="1">₪0</button>
+              </div>
               <div id="detGroupLessonRow" class="det-group-lesson-row mt-2 mb-0">
                 <input class="form-check-input flex-shrink-0" type="checkbox" id="detIsGroupLesson" autocomplete="off" aria-describedby="detPayHint" />
                 <label class="form-check-label text-muted mb-0" for="detIsGroupLesson">שיעור קבוצתי (מוצג בחיוב)</label>
               </div>
             </div>
             <label class="form-label small text-muted mb-1" for="detPaidAmount">סכום ששולם (₪)</label>
-            <input type="number" class="form-control form-control-lg mb-3" id="detPaidAmount" min="0" step="1" inputmode="numeric" />
-            <label class="form-label small text-muted mb-1" for="detPaymentMethod">אמצעי תשלום</label>
-            <select class="form-select form-select-lg mb-2 det-pay-method-select" id="detPaymentMethod" aria-label="אמצעי תשלום">
+            <input type="number" class="form-control form-control-lg mb-2" id="detPaidAmount" min="0" step="1" inputmode="numeric" />
+            <div id="detAfterPayPreview" class="small rounded px-3 py-2 mb-3 d-none" role="status"></div>
+            <div class="mb-1 small text-muted fw-semibold">אמצעי תשלום</div>
+            <div class="det-pay-method-chips d-flex flex-wrap gap-2 mb-2" role="group" aria-label="אמצעי תשלום">
+              <button type="button" class="btn btn-outline-secondary det-pay-chip flex-fill flex-sm-grow-0" data-method="cash">מזומן</button>
+              <button type="button" class="btn btn-outline-secondary det-pay-chip flex-fill flex-sm-grow-0" data-method="bit">ביט</button>
+              <button type="button" class="btn btn-outline-secondary det-pay-chip flex-fill flex-sm-grow-0" data-method="paybox">פייבוקס</button>
+              <button type="button" class="btn btn-outline-secondary det-pay-chip flex-fill flex-sm-grow-0" data-method="other">אחר</button>
+            </div>
+            <label class="visually-hidden" for="detPaymentMethod">אמצעי תשלום (שמירה)</label>
+            <select class="form-select visually-hidden" id="detPaymentMethod" aria-hidden="true" tabindex="-1">
               <option value="cash">מזומן</option>
               <option value="bit">ביט</option>
               <option value="paybox">פייבוקס</option>

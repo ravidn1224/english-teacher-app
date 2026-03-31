@@ -5,12 +5,14 @@ from pathlib import Path
 
 from .database import engine, ensure_schema
 from . import models
+from . import migrations_families
 from .routers import students, lessons, reports
 from .templating import templates
 
 # Create all tables on startup
 models.Base.metadata.create_all(bind=engine)
 ensure_schema(engine)
+migrations_families.backfill_families_if_needed(engine, models)
 
 app = FastAPI(title="מערכת ניהול תלמידים", docs_url="/api/docs")
 

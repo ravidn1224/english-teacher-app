@@ -66,6 +66,21 @@ def ensure_schema(engine):
         if "balance" not in stu_cols:
             with engine.begin() as conn:
                 conn.execute(text("ALTER TABLE students ADD COLUMN balance INTEGER NOT NULL DEFAULT 0"))
+        if "students" in insp.get_table_names() and "families" in insp.get_table_names():
+            if "family_id" not in stu_cols:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE students ADD COLUMN family_id INTEGER NULL REFERENCES families(id)"
+                        )
+                    )
+            if "lesson_type" not in stu_cols:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE students ADD COLUMN lesson_type VARCHAR(20) NOT NULL DEFAULT 'individual'"
+                        )
+                    )
         if "regular_schedule" in insp.get_table_names():
             rs_cols = {c["name"] for c in insp.get_columns("regular_schedule")}
             if "frequency" not in rs_cols:

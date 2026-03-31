@@ -1,0 +1,224 @@
+{% extends "base.html" %}
+{% block title %}דוח חודשי{% endblock %}
+
+{% block content %}
+<div class="monthly-report-page">
+  <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
+    <h1 class="page-title mb-0 d-flex align-items-center gap-2">
+      <i class="bi bi-graph-up-arrow text-danger" aria-hidden="true"></i>
+      דוח חודשי
+    </h1>
+    <div class="d-flex gap-2 flex-wrap no-print">
+      <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
+        <i class="bi bi-printer me-1"></i>הדפסה
+      </button>
+      <a href="/reports/export-monthly.xlsx?month={{ month_input }}" class="btn btn-success">
+        <i class="bi bi-file-earmark-excel me-1"></i>ייצוא לאקסל
+      </a>
+    </div>
+  </div>
+
+  <div class="monthly-report-nav no-print mb-4">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
+      <div class="d-flex flex-wrap align-items-center gap-2">
+        <a href="/reports/?month={{ prev_month_q }}" class="btn btn-outline-secondary rounded-pill px-3" title="חודש קודם">
+          <i class="bi bi-chevron-right"></i>
+        </a>
+        <form method="get" action="/reports/" class="d-flex align-items-center gap-2 mb-0">
+          <label class="visually-hidden" for="reportMonthPick">בחירת חודש</label>
+          <input type="month" id="reportMonthPick" name="month" value="{{ month_input }}" class="form-control form-control-lg report-month-input" onchange="this.form.submit()" />
+        </form>
+        <a href="/reports/?month={{ next_month_q }}" class="btn btn-outline-secondary rounded-pill px-3" title="חודש הבא">
+          <i class="bi bi-chevron-left"></i>
+        </a>
+      </div>
+      <div class="text-muted small fw-semibold">{{ report_month_label }}</div>
+    </div>
+  </div>
+
+  <div class="monthly-summary-grid mb-4">
+    <div class="monthly-stat-card">
+      <div class="monthly-stat-card__icon text-primary"><i class="bi bi-journal-bookmark"></i></div>
+      <div>
+        <div class="monthly-stat-card__label">שיעורים שבוצעו</div>
+        <div class="monthly-stat-card__value">{{ summary.lessons_done }}</div>
+        <div class="monthly-stat-card__sub">{{ summary.families_with_lessons }} משפחות</div>
+      </div>
+    </div>
+    <div class="monthly-stat-card monthly-stat-card--carry">
+      <div class="monthly-stat-card__icon text-danger"><i class="bi bi-pin-map"></i></div>
+      <div>
+        <div class="monthly-stat-card__label">העברה מחודש קודם</div>
+        <div class="monthly-stat-card__value {% if summary.carry_sum < 0 %}text-danger{% elif summary.carry_sum > 0 %}text-primary{% endif %}">
+          {% if summary.carry_sum < 0 %}−‎₪{{ summary.carry_sum|abs }}{% elif summary.carry_sum > 0 %}+‎₪{{ summary.carry_sum }}{% else %}₪0{% endif %}
+        </div>
+        <div class="monthly-stat-card__sub">{% if summary.carry_sum < 0 %}חוב שנמשך{% elif summary.carry_sum > 0 %}זיכוי נמשך{% else %}ללא העברה{% endif %}</div>
+      </div>
+    </div>
+    <div class="monthly-stat-card">
+      <div class="monthly-stat-card__icon text-success"><i class="bi bi-cash-coin"></i></div>
+      <div>
+        <div class="monthly-stat-card__label">שולם החודש</div>
+        <div class="monthly-stat-card__value text-success">₪{{ summary.month_paid }}</div>
+        <div class="monthly-stat-card__sub">מתוך ‎₪{{ summary.month_charge }} חיוב</div>
+      </div>
+    </div>
+    <div class="monthly-stat-card">
+      <div class="monthly-stat-card__icon text-warning"><i class="bi bi-exclamation-triangle"></i></div>
+      <div>
+        <div class="monthly-stat-card__label">יתרה סוף חודש</div>
+        <div class="monthly-stat-card__value {% if summary.end_balance_sum < 0 %}text-danger{% elif summary.end_balance_sum > 0 %}text-primary{% endif %}">
+          {% if summary.end_balance_sum < 0 %}חוב ‎₪{{ summary.end_balance_sum|abs }}{% elif summary.end_balance_sum > 0 %}זיכוי ‎₪{{ summary.end_balance_sum }}{% else %}₪0{% endif %}
+        </div>
+        <div class="monthly-stat-card__sub">{{ summary.families_in_debt_end }} משפחות עם חוב</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="monthly-filter-tabs no-print mb-4" role="tablist">
+    <button type="button" class="monthly-filter-tab active" data-monthly-filter="all">הכל ({{ filter_counts.all }})</button>
+    <button type="button" class="monthly-filter-tab" data-monthly-filter="debt">עם חוב ({{ filter_counts.debt }})</button>
+    <button type="button" class="monthly-filter-tab" data-monthly-filter="credit">עם זיכוי ({{ filter_counts.credit }})</button>
+    <button type="button" class="monthly-filter-tab" data-monthly-filter="balanced">מאוזנים ({{ filter_counts.balanced }})</button>
+  </div>
+
+  {% if monthly_families %}
+  <div class="monthly-family-list">
+    {% for fam in monthly_families %}
+    <div class="monthly-family-card monthly-family-card--{{ fam.filter_class }}" data-monthly-family-filter="{{ fam.filter_class }}">
+      <div class="monthly-family-card__head" data-bs-toggle="collapse" data-bs-target="#fam-body-{{ fam.id }}" aria-expanded="false" role="button">
+        <span class="monthly-family-card__chev"><i class="bi bi-chevron-down"></i></span>
+        <div class="monthly-family-card__main">
+          <div class="monthly-family-card__title">
+            <i class="bi bi-people-fill me-2 text-primary" aria-hidden="true"></i>{{ fam.name }}
+          </div>
+          <div class="monthly-family-card__meta text-muted small">
+            {% if fam.contact_name %}<span>{{ fam.contact_name }}</span>{% endif %}
+            {% if fam.phone %}<span class="mx-1">·</span><a href="tel:{{ fam.phone }}" class="text-muted text-decoration-none" onclick="event.stopPropagation()">{{ fam.phone }}</a>{% endif %}
+            <span class="mx-1">·</span>{{ fam.student_count }} תלמידים
+            <span class="mx-1">·</span>{{ fam.lesson_count }} שיעורים
+          </div>
+        </div>
+        <div class="monthly-family-card__badge" onclick="event.stopPropagation()">
+          {% if fam.end_balance < 0 %}
+            <span class="badge rounded-pill bg-danger-subtle text-danger border border-danger-subtle">חוב ‎₪{{ (-fam.end_balance) }}</span>
+          {% elif fam.end_balance > 0 %}
+            <span class="badge rounded-pill bg-primary-subtle text-primary border border-primary-subtle">זיכוי ‎₪{{ fam.end_balance }}</span>
+          {% else %}
+            <span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle"><i class="bi bi-check-lg me-1"></i>מאוזן</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <div id="fam-body-{{ fam.id }}" class="collapse monthly-family-card__body">
+        <div class="monthly-family-summary-row">
+          <div class="monthly-fs-cell">
+            <div class="monthly-fs-label">העברה</div>
+            <div class="monthly-fs-val {% if fam.carry_over < 0 %}text-danger{% elif fam.carry_over > 0 %}text-primary{% endif %}">
+              {% if fam.carry_over < 0 %}−‎₪{{ fam.carry_over|abs }}{% elif fam.carry_over > 0 %}+‎₪{{ fam.carry_over }}{% else %}₪0{% endif %}
+            </div>
+          </div>
+          <div class="monthly-fs-cell">
+            <div class="monthly-fs-label">חיוב החודש</div>
+            <div class="monthly-fs-val">₪{{ fam.month_charge }}</div>
+          </div>
+          <div class="monthly-fs-cell">
+            <div class="monthly-fs-label">שולם החודש</div>
+            <div class="monthly-fs-val text-success">₪{{ fam.month_paid }}</div>
+          </div>
+          <div class="monthly-fs-cell">
+            <div class="monthly-fs-label">יתרה סוף חודש</div>
+            <div class="monthly-fs-val {% if fam.end_balance < 0 %}text-danger{% elif fam.end_balance > 0 %}text-primary{% endif %}">
+              {% if fam.end_balance < 0 %}−‎₪{{ fam.end_balance|abs }}{% elif fam.end_balance > 0 %}+‎₪{{ fam.end_balance }}{% else %}₪0{% endif %}
+            </div>
+          </div>
+        </div>
+
+        {% if fam.show_debt_trail %}
+        <div class="monthly-debt-trail">
+          <div class="monthly-debt-trail__title"><i class="bi bi-signpost-split me-2"></i>מעקב חוב — מאיפה הגיע?</div>
+          <div class="monthly-debt-trail__chips">
+            {% for step in fam.debt_trail|reverse %}
+            <a href="/reports/?month={{ step.month_key }}" class="monthly-debt-trail__chip">
+              <span class="monthly-debt-trail__chip-month">{{ step.month_label_he }}</span>
+              <span class="monthly-debt-trail__chip-lines small text-muted">
+                העברה: {% if step.carry_over < 0 %}−‎₪{{ step.carry_over|abs }}{% elif step.carry_over > 0 %}+‎₪{{ step.carry_over }}{% else %}₪0{% endif %}
+                · סוף: {% if step.end_balance < 0 %}−‎₪{{ step.end_balance|abs }}{% elif step.end_balance > 0 %}+‎₪{{ step.end_balance }}{% else %}₪0{% endif %}
+              </span>
+            </a>
+            {% if not loop.last %}<span class="monthly-debt-trail__arrow" aria-hidden="true">→</span>{% endif %}
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+
+        {% if fam.students|selectattr('lesson_count', 'gt', 0)|list|length == 0 %}
+        <p class="small text-muted mb-0">אין שיעורים מסומנים «הגיע/ה» או «לא הגיע/ה» בחודש הזה — מוצגת רק יתרת המשפחה לפי הספר.</p>
+        {% endif %}
+
+        {% for st in fam.students %}
+        {% if st.lesson_count > 0 %}
+        <div class="monthly-student-block">
+          <div class="monthly-student-head" data-bs-toggle="collapse" data-bs-target="#stud-{{ fam.id }}-{{ st.id }}" aria-expanded="false" role="button">
+            <span class="monthly-student-head__chev"><i class="bi bi-chevron-down"></i></span>
+            <i class="bi bi-mortarboard-fill text-primary me-2" aria-hidden="true"></i>
+            <span class="monthly-student-head__name">{{ st.name }}</span>
+            <span class="monthly-student-head__sum small text-muted ms-2">
+              חיוב ‎₪{{ st.charge_sum }} · שולם ‎₪{{ st.paid_sum }} · {{ st.lesson_count }} שיעורים
+            </span>
+          </div>
+          <div id="stud-{{ fam.id }}-{{ st.id }}" class="collapse">
+            <div class="table-responsive monthly-lesson-table-wrap">
+              <table class="table table-sm mb-0 monthly-lesson-table">
+                <thead>
+                  <tr>
+                    <th>תאריך</th>
+                    <th>שעות</th>
+                    <th>סוג</th>
+                    <th>אמצעי</th>
+                    <th>חיוב</th>
+                    <th>שולם</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for lesson in st.lessons %}
+                  <tr class="monthly-lesson-row monthly-lesson-row--{{ lesson.row_class }}">
+                    <td class="fw-semibold">{{ lesson.lesson_date.strftime('%d/%m/%Y') }}</td>
+                    <td class="text-muted">{{ lesson.start_time.strftime('%H:%M') }}–{{ lesson.end_time.strftime('%H:%M') }}</td>
+                    <td>{{ lesson.type_he }}</td>
+                    <td>
+                      {% if lesson.is_paid and lesson.payment_method %}
+                        <span class="badge rounded-pill monthly-pay-badge monthly-pay-badge--{{ lesson.payment_method }}">{{ lesson.method_he }}</span>
+                      {% elif lesson.is_paid %}
+                        <span class="badge rounded-pill bg-light text-dark border">שולם</span>
+                      {% else %}
+                        <span class="text-danger small fw-semibold">לא שולם</span>
+                      {% endif %}
+                    </td>
+                    <td class="fw-bold">{{ lesson.price }} ₪</td>
+                    <td class="fw-bold monthly-paid-cell">{{ lesson.paid_display }} ₪</td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="text-center py-5 monthly-report-empty">
+    <i class="bi bi-calendar-x text-muted display-4 d-block mb-3" aria-hidden="true"></i>
+    <p class="fs-5 text-muted mb-0">אין נתונים לחודש הזה (או אין משפחות עם פעילות / יתרה).</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script src="/static/js/monthly_report.js?v={{ static_v('js/monthly_report.js') }}"></script>
+{% endblock %}

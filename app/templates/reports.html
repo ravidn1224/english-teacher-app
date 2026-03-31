@@ -5,7 +5,7 @@
 <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
   <h1 class="page-title mb-0"><i class="bi bi-file-earmark-bar-graph me-2 text-primary"></i>דוח חובות</h1>
   <div class="d-flex gap-2 flex-wrap no-print">
-    <a href="/reports/export.xlsx" class="btn btn-success">
+    <a href="/reports/export.xlsx?month={{ month_input }}" class="btn btn-success">
       <i class="bi bi-file-earmark-excel me-1"></i>ייצוא לאקסל
     </a>
     <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
@@ -47,7 +47,7 @@
     <div>
       <div class="report-stat-card__label">סה״כ לגבייה (כל החודשים)</div>
       <div class="report-stat-card__value">{{ grand_total }} <span class="report-stat-card__unit">₪</span></div>
-      <div class="report-stat-card__sub">מפורט למטה לפי משפחות</div>
+      <div class="report-stat-card__sub">לפי יתרת משפחה (כולל אחרי «שולם» חלקי)</div>
     </div>
   </div>
 </div>
@@ -57,7 +57,7 @@
 <div class="grand-total-bar">
   <div>
     <div class="gt-label"><i class="bi bi-exclamation-circle me-2"></i>סה"כ לגבייה</div>
-    <div style="font-size:.85rem; opacity:.75; margin-top:2px">{{ families | length }} משפחות עם חוב פתוח</div>
+    <div style="font-size:.85rem; opacity:.75; margin-top:2px">{{ families | length }} משפחות עם יתרת חוב (שלילית)</div>
   </div>
   <div class="gt-amount">{{ grand_total }} ₪</div>
 </div>
@@ -85,17 +85,26 @@
           <th>תאריך</th>
           <th>תלמיד</th>
           <th>שעות</th>
-          <th>מחיר</th>
+          <th>חיוב</th>
+          <th>שולם</th>
           <th>סטטוס</th>
         </tr>
       </thead>
       <tbody>
+        {% if data.lessons %}
         {% for lesson in data.lessons %}
         <tr>
           <td class="fw-semibold">{{ lesson.lesson_date.strftime('%d/%m/%Y') }}</td>
           <td>{{ lesson.student.first_name }} {{ lesson.student.last_name }}</td>
           <td style="color:var(--text-muted)">{{ lesson.start_time.strftime('%H:%M') }} – {{ lesson.end_time.strftime('%H:%M') }}</td>
           <td class="fw-bold">{{ lesson.price }} ₪</td>
+          <td class="fw-bold">
+            {% if lesson.is_paid %}
+              {% if lesson.paid_amount is not none %}{{ lesson.paid_amount }}{% else %}{{ lesson.price }}{% endif %} ₪
+            {% else %}
+              <span class="text-muted">—</span>
+            {% endif %}
+          </td>
           <td>
             {% if lesson.status == 'completed' %}
               <span class="status-pill completed">הושלם</span>
@@ -105,10 +114,17 @@
           </td>
         </tr>
         {% endfor %}
+        {% else %}
+        <tr>
+          <td colspan="6" class="text-muted text-center py-4 small">
+            אין שיעורים בחודש {{ report_month_label }} בטבלה — ייתכן שהחוב נובע מתשלום חלקי או מחודשים קודמים. הסכום בכותרת הכרטיס הוא יתרת החוב העדכנית למשפחה.
+          </td>
+        </tr>
+        {% endif %}
       </tbody>
       <tfoot>
         <tr>
-          <td colspan="3">סה"כ לחיוב</td>
+          <td colspan="4">יתרת חוב משפחתית (מקור האמת)</td>
           <td colspan="2" class="text-danger" style="font-size:1.05rem">{{ data.total }} ₪</td>
         </tr>
       </tfoot>

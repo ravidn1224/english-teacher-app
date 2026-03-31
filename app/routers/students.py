@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from ..database import get_db
 from .. import models
+from .. import family_utils
 from ..templating import templates
 
 router = APIRouter(prefix="/students", tags=["students"])
@@ -163,6 +164,8 @@ def create_student(
         notes=notes,
     )
     db.add(student)
+    db.flush()
+    family_utils.get_or_create_family_for_student(db, student, models)
     db.commit()
     db.refresh(student)
     return RedirectResponse(url=f"/students/{student.id}", status_code=303)
@@ -224,6 +227,8 @@ def update_student(
     student.parent_phone = parent_phone
     student.default_price = default_price
     student.notes = notes
+    if not student.family_id:
+        family_utils.get_or_create_family_for_student(db, student, models)
     db.commit()
     return RedirectResponse(url=f"/students/{student_id}", status_code=303)
 

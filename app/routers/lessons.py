@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from pathlib import Path
 import calendar as cal_std
 from datetime import date, datetime, time as dt_time, timedelta
@@ -8,6 +8,7 @@ from typing import Optional
 
 from ..database import get_db
 from .. import models
+from .. import family_utils
 from ..templating import templates
 
 router = APIRouter(tags=["lessons"])
@@ -86,30 +87,74 @@ def _lesson_payment_net_for_balance(lesson: models.Lesson) -> int:
 def _format_balance_hint_he(bal: int) -> str:
     b = int(bal)
     if b > 0:
-        return f"יתרה חדשה: ‎+₪{b} (זיכוי לתלמיד)"
+        return f"יתרה חדשה למשפחה: ‎+₪{b} (זיכוי)"
     if b < 0:
-        return f"יתרה חדשה: ₪{b} (התלמיד חייב ‎₪{-b})"
-    return "יתרה חדשה: ‎₪0"
+        return f"יתרה חדשה למשפחה: ₪{b} (חוב ‎₪{-b})"
+    return "יתרה חדשה למשפחה: ‎₪0"
 
 
-def _payment_feedback_he(lesson: models.Lesson, new_student_balance: int) -> str:
-    """After marking paid: explain per-lesson overpayment, else running balance."""
+def _payment_feedback_he(lesson: models.Lesson, new_family_balance: int) -> str:
+    """After marking paid: explain per-lesson overpayment, else running family balance."""
     if lesson.is_paid and int(lesson.price or 0) > 0:
         c = int(lesson.price)
         p = int(lesson.paid_amount) if lesson.paid_amount is not None else c
         if p > c:
             over = p - c
             return f"אחרי תשלום: זיכוי ‎₪{over} — יקוזז בשיעור הבא"
-    return _format_balance_hint_he(new_student_balance)
+    return _format_balance_hint_he(new_family_balance)
 
 
-def _reverse_lesson_balance_on_student(lesson: models.Lesson, db: Session) -> None:
+def _ledger_charge_paid_for_lesson(lesson: models.Lesson) -> tuple[int, int]:
+    if lesson.status == "cancelled":
+        return 0, 0
+    c = int(lesson.price or 0)
+    if lesson.is_paid:
+        p = int(lesson.paid_amount) if lesson.paid_amount is not None else c
+        return c, p
+    if not bool(getattr(lesson, "payment_finalized", False)):
+        return c, 0
+    att = (getattr(lesson, "attendance", None) or "expected").lower()
+    if att == "no_show":
+        return 0, 0
+    return c, 0
+
+
+def _append_balance_transaction(
+    db: Session,
+    family_id: int,
+    lesson: models.Lesson,
+    balance_before: int,
+    balance_after: int,
+) -> None:
+    delta = balance_after - balance_before
+    if delta == 0:
+        return
+    ch, pd = _ledger_charge_paid_for_lesson(lesson)
+    d = lesson.lesson_date
+    mk = f"{d.year}-{d.month:02d}"
+    db.add(
+        models.BalanceTransaction(
+            family_id=family_id,
+            lesson_id=lesson.id,
+            charge=ch,
+            paid=pd,
+            balance_before=balance_before,
+            balance_after=balance_after,
+            txn_date=d,
+            month_key=mk,
+        )
+    )
+
+
+def _reverse_lesson_balance_on_family(lesson: models.Lesson, db: Session) -> None:
     applied = int(getattr(lesson, "balance_applied", 0) or 0)
     if not applied:
         return
     st = db.query(models.Student).filter(models.Student.id == lesson.student_id).first()
-    if st:
-        st.balance = int(getattr(st, "balance", 0) or 0) - applied
+    if st and st.family_id:
+        fam = db.query(models.Family).filter(models.Family.id == st.family_id).first()
+        if fam:
+            fam.balance = int(getattr(fam, "balance", 0) or 0) - applied
     lesson.balance_applied = 0
 
 
@@ -180,7 +225,11 @@ def get_lessons_json(
     start_date = date.fromisoformat(start[:10]) if start else None
     end_date = date.fromisoformat(end[:10]) if end else None
 
-    query = db.query(models.Lesson).join(models.Student)
+    query = (
+        db.query(models.Lesson)
+        .join(models.Student)
+        .options(joinedload(models.Lesson.student).joinedload(models.Student.family))
+    )
     if start_date:
         query = query.filter(models.Lesson.lesson_date >= start_date)
     if end_date:
@@ -216,7 +265,18 @@ def get_lessons_json(
                 "paymentNote": getattr(lesson, "payment_note", None) or "",
                 "notes": lesson.notes or "",
                 "isRecurring": False,
-                "studentBalance": int(getattr(lesson.student, "balance", 0) or 0),
+                "studentBalance": int(
+                    getattr(lesson.student.family, "balance", 0) or 0
+                )
+                if getattr(lesson.student, "family", None)
+                else int(getattr(lesson.student, "balance", 0) or 0),
+                "familyBalance": int(
+                    getattr(lesson.student.family, "balance", 0) or 0
+                )
+                if getattr(lesson.student, "family", None)
+                else int(getattr(lesson.student, "balance", 0) or 0),
+                "familyId": getattr(lesson.student, "family_id", None),
+                "studentLessonType": getattr(lesson.student, "lesson_type", None) or "individual",
                 "isGroupLesson": bool(getattr(lesson, "is_group_lesson", False)),
                 "balanceApplied": int(getattr(lesson, "balance_applied", 0) or 0),
             },
@@ -224,7 +284,12 @@ def get_lessons_json(
 
     # Virtual recurring events from regular_schedule
     if start_date and end_date:
-        schedules = db.query(models.RegularSchedule).join(models.Student).all()
+        schedules = (
+            db.query(models.RegularSchedule)
+            .join(models.Student)
+            .options(joinedload(models.RegularSchedule.student).joinedload(models.Student.family))
+            .all()
+        )
         current = start_date
         while current <= end_date:
             for sched in schedules:
@@ -245,7 +310,18 @@ def get_lessons_json(
                             "isPaid": False,
                             "attendance": "expected",
                             "price": sched.student.default_price,
-                            "studentBalance": int(getattr(sched.student, "balance", 0) or 0),
+                            "studentBalance": int(
+                                getattr(sched.student.family, "balance", 0) or 0
+                            )
+                            if getattr(sched.student, "family", None)
+                            else int(getattr(sched.student, "balance", 0) or 0),
+                            "familyBalance": int(
+                                getattr(sched.student.family, "balance", 0) or 0
+                            )
+                            if getattr(sched.student, "family", None)
+                            else int(getattr(sched.student, "balance", 0) or 0),
+                            "familyId": getattr(sched.student, "family_id", None),
+                            "studentLessonType": getattr(sched.student, "lesson_type", None) or "individual",
                             "isGroupLesson": False,
                             "balanceApplied": 0,
                             "notes": "",
@@ -324,6 +400,7 @@ def materialize_from_slot_api(
     student = db.query(models.Student).filter(models.Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="תלמיד לא נמצא")
+    family_utils.get_or_create_family_for_student(db, student, models)
     price = int(student.default_price or 0)
     lesson = models.Lesson(
         student_id=student_id,
@@ -713,25 +790,50 @@ def update_lesson_api(
 
     if lesson.student_id != sid_before:
         ost = db.query(models.Student).filter(models.Student.id == sid_before).first()
-        if ost and old_applied:
-            ost.balance = int(getattr(ost, "balance", 0) or 0) - old_applied
+        if ost and old_applied and ost.family_id:
+            ofam = db.query(models.Family).filter(models.Family.id == ost.family_id).first()
+            if ofam:
+                ofam.balance = int(getattr(ofam, "balance", 0) or 0) - old_applied
         lesson.balance_applied = 0
         old_applied = 0
 
     new_net = _lesson_payment_net_for_balance(lesson)
     st = db.query(models.Student).filter(models.Student.id == lesson.student_id).first()
+    fam_bal = 0
     if st:
-        st.balance = int(getattr(st, "balance", 0) or 0) + (new_net - old_applied)
+        family_utils.get_or_create_family_for_student(db, st, models)
+        db.refresh(st)
+        fam = (
+            db.query(models.Family).filter(models.Family.id == st.family_id).first()
+            if st.family_id
+            else None
+        )
+        delta = new_net - old_applied
+        if fam and delta != 0:
+            bal_before = int(getattr(fam, "balance", 0) or 0)
+            fam.balance = bal_before + delta
+            bal_after = fam.balance
+            _append_balance_transaction(db, fam.id, lesson, bal_before, bal_after)
+            fam_bal = bal_after
+        elif fam:
+            fam_bal = int(getattr(fam, "balance", 0) or 0)
+        st.balance = 0
     lesson.balance_applied = new_net
 
     db.commit()
     db.refresh(lesson)
     st2 = db.query(models.Student).filter(models.Student.id == lesson.student_id).first()
-    bal = int(getattr(st2, "balance", 0) or 0) if st2 else 0
+    fam2 = (
+        db.query(models.Family).filter(models.Family.id == st2.family_id).first()
+        if st2 and st2.family_id
+        else None
+    )
+    bal = int(getattr(fam2, "balance", 0) or 0) if fam2 else fam_bal
 
     return JSONResponse(
         content={
             "status": "ok",
+            "family_balance": bal,
             "student_balance": bal,
             "lesson_balance_applied": int(getattr(lesson, "balance_applied", 0) or 0),
             "balance_hint_he": _payment_feedback_he(lesson, bal),
@@ -744,7 +846,7 @@ def delete_lesson_api(lesson_id: int, db: Session = Depends(get_db)):
     lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
     if not lesson:
         return JSONResponse(content={"status": "ok"})
-    _reverse_lesson_balance_on_student(lesson, db)
+    _reverse_lesson_balance_on_family(lesson, db)
     if _lesson_matches_any_recurring_slot(lesson, db):
         # Remove this date from the calendar but keep RegularSchedule — same as skip-slot
         lesson.status = "cancelled"
