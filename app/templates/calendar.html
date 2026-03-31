@@ -8,10 +8,7 @@
 {% block content %}
 <div class="gc-cal-page">
   <!-- Minimal row like Google Calendar: small shortcuts + primary create -->
-  <div class="gc-cal-extras d-flex align-items-center justify-content-end flex-wrap gap-2 mb-2">
-    <button type="button" class="btn btn-link btn-sm gc-text-btn" onclick="openQuickLessonTomorrow()">מחר</button>
-    <span class="gc-sep text-muted" aria-hidden="true">|</span>
-    <button type="button" class="btn btn-link btn-sm gc-text-btn" onclick="openQuickLessonToday()">היום</button>
+  <div class="gc-cal-extras d-flex align-items-center justify-content-start flex-wrap gap-2 mb-2">
     <button type="button" class="btn btn-primary btn-sm rounded-pill px-3 gc-create-btn" onclick="openNewLessonModal()">
       <i class="bi bi-plus-lg me-1"></i>שיעור
     </button>
@@ -36,7 +33,7 @@
     <span><i class="gc-dot" style="background:#14b8a6"></i>קבוע</span>
     <span><i class="gc-dot" style="background:#ccfbf1;border:1px solid #5eead4"></i>ממתין</span>
     <span><i class="gc-dot" style="background:#6b7280"></i>לא הגיע/ה</span>
-    <span><i class="gc-dot" style="background:#0d9488"></i>הגיע · לא שולם</span>
+    <span><i class="gc-dot" style="background:#f59e0b"></i>הגיע · לא שולם</span>
     <span><i class="gc-dot" style="background:#059669"></i>שולם</span>
     <span><i class="gc-dot" style="background:#94a3b8"></i>בוטל</span>
     <span class="gc-legend-note">קו אדום = עכשיו · <strong>גרירה</strong> = הזזה ליום/שעה אחרים (חודש · שבוע · יום) · משיכת קצה תחתון = שינוי אורך · נשמר אוטומטית · לחיצה = פרטים</span>
@@ -48,7 +45,7 @@
 
 <!-- Detail card -->
 <div class="modal fade" id="detailModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-dialog-centered">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
     <div class="modal-content">
 
       <div class="modal-header" id="detHeader">
@@ -56,12 +53,22 @@
           <div class="det-kicker text-muted small fw-semibold mb-1">שיעור</div>
           <div class="det-name text-truncate" id="detName"></div>
           <div class="det-meta" id="detTime"></div>
+          <div class="mt-2">
+            <button type="button" class="btn btn-sm btn-outline-primary" id="detBtnEditWhen" onclick="switchToEdit()" style="display: none">
+              <i class="bi bi-calendar3 me-1" aria-hidden="true"></i>עריכת תאריך ושעה
+            </button>
+          </div>
         </div>
         <button type="button" class="btn-close ms-2 flex-shrink-0" data-bs-dismiss="modal" aria-label="סגור"></button>
       </div>
 
-      <!-- Real lesson -->
-      <div class="modal-body cal-det-body px-3 px-md-4 pb-3 pb-md-4" id="detBodyReal" style="display:none">
+      <!-- Real lesson: LTR scroll host so scrollbar stays on the right; inner block stays RTL -->
+      <div class="modal-body cal-det-body cal-det-body--scroll px-3 px-md-4 pb-3 pb-md-4" id="detBodyReal" style="display:none">
+        <div class="cal-det-scroll-inner">
+        <div id="detSavedBanner" class="cal-det-save-banner d-none" role="status" aria-live="polite">
+          <i class="bi bi-check-circle-fill cal-det-save-banner__icon" aria-hidden="true"></i>
+          <span>הפרטים נשמרו</span>
+        </div>
         <p class="cal-det-microhint text-muted small mb-3" id="detMicroHint">כל סימון נשמר מיד בלחיצה.</p>
 
         <div id="detAttendanceRow" class="det-section det-section--attendance mb-3">
@@ -86,35 +93,47 @@
             <span class="det-section__icon" aria-hidden="true"><i class="bi bi-wallet2"></i></span>
             <div>
               <h3 class="det-section__title">תשלום</h3>
-              <p class="det-section__hint" id="detPayHint">בחרי אמצעי וסכום, ואז סמני «שולם» — או עדכני אחרי סימון התשלום</p>
+              <p class="det-section__hint" id="detPayHint">בחרי אמצעי וסכום, ואז לחצי «שולם» או «לא שולם».</p>
             </div>
           </div>
 
           <div id="detPaymentDetailsRow">
+            <div id="detPayChargeAndBalance" class="mb-3 small text-body-secondary lh-lg" data-server-student-balance="0" data-lesson-balance-applied="0">
+              <div class="mb-2">
+                <label class="form-label small text-muted mb-1" for="detLessonCharge">חיוב לשיעור (₪)</label>
+                <input type="number" class="form-control" id="detLessonCharge" min="0" step="1" inputmode="numeric" autocomplete="off" />
+              </div>
+              <div id="detStudentBalanceLine" class="fw-medium">יתרה נוכחית: ‎₪0 (חיובי = זיכוי, שלילי = חוב)</div>
+              <div id="detGroupLessonRow" class="det-group-lesson-row mt-2 mb-0">
+                <input class="form-check-input flex-shrink-0" type="checkbox" id="detIsGroupLesson" autocomplete="off" aria-describedby="detPayHint" />
+                <label class="form-check-label text-muted mb-0" for="detIsGroupLesson">שיעור קבוצתי (מוצג בחיוב)</label>
+              </div>
+            </div>
             <label class="form-label small text-muted mb-1" for="detPaidAmount">סכום ששולם (₪)</label>
             <input type="number" class="form-control form-control-lg mb-3" id="detPaidAmount" min="0" step="1" inputmode="numeric" />
-            <div class="mb-1 small text-muted fw-semibold">אמצעי תשלום</div>
-            <div class="det-pay-method-chips d-flex flex-wrap gap-2 mb-2" role="group" aria-label="אמצעי תשלום">
-              <button type="button" class="btn btn-outline-secondary det-pay-chip flex-fill flex-sm-grow-0" data-method="bit">ביט</button>
-              <button type="button" class="btn btn-outline-secondary det-pay-chip flex-fill flex-sm-grow-0" data-method="cash">מזומן / עודף</button>
-              <button type="button" class="btn btn-outline-secondary det-pay-chip flex-fill flex-sm-grow-0" data-method="paybox">פייבוקס</button>
-              <button type="button" class="btn btn-outline-secondary det-pay-chip flex-fill flex-sm-grow-0" data-method="other">אחר</button>
-            </div>
-            <label class="visually-hidden" for="detPaymentMethod">אמצעי תשלום (לשמירה בשרת)</label>
-            <select class="form-select visually-hidden" id="detPaymentMethod">
-              <option value="cash">מזומן / עודף</option>
+            <label class="form-label small text-muted mb-1" for="detPaymentMethod">אמצעי תשלום</label>
+            <select class="form-select form-select-lg mb-2 det-pay-method-select" id="detPaymentMethod" aria-label="אמצעי תשלום">
+              <option value="cash">מזומן</option>
               <option value="bit">ביט</option>
               <option value="paybox">פייבוקס</option>
               <option value="other">אחר</option>
             </select>
+            <div id="detPaymentOtherWrap" class="mb-3 d-none">
+              <label class="form-label small text-muted mb-1" for="detPaymentOtherNote">פרטי אמצעי תשלום</label>
+              <textarea class="form-control form-control-sm" id="detPaymentOtherNote" rows="2" placeholder="למשל: העברה, צ׳ק, אפליקציה…"></textarea>
+            </div>
             <button type="button" class="btn btn-outline-secondary btn-sm w-100 mb-2 d-none" id="detSavePaymentDetailsBtn" onclick="detSavePaymentDetails()">עדכן סכום ואמצעי (כבר שולם)</button>
-            <div class="form-text text-success small d-none mt-1" id="detPaymentSaveHint" aria-live="polite">נשמר</div>
           </div>
 
-          <button type="button" id="detPaidBtn" class="unpaid w-100 mt-2" onclick="detTogglePaid()">
-            <i class="bi bi-x-circle" id="detPaidIcon"></i>
-            <span id="detPaidLabel">לא שולם — לחצי לסימון</span>
-          </button>
+          <div class="d-flex flex-column flex-sm-row gap-2 mt-2 det-paid-actions">
+            <button type="button" id="detMarkPaidBtn" class="btn btn-success flex-fill" onclick="detApplyPaidState(true)">
+              <i class="bi bi-check-circle me-1" aria-hidden="true"></i>שולם
+            </button>
+            <button type="button" id="detMarkUnpaidBtn" class="btn btn-outline-danger flex-fill det-mark-unpaid-btn" onclick="detApplyPaidState(false)">
+              <i class="bi bi-x-circle me-1" aria-hidden="true"></i>לא שולם
+            </button>
+          </div>
+          <div id="detPaymentBalanceFeedback" class="alert alert-success py-2 px-3 small mt-2 mb-0 d-none" role="status"></div>
         </div>
 
         <div class="det-section det-section--notes mb-3" id="detNotesSection">
@@ -122,33 +141,16 @@
             <span class="det-section__icon" aria-hidden="true"><i class="bi bi-chat-left-text"></i></span>
             <div>
               <h3 class="det-section__title">הערות לשיעור</h3>
-              <p class="det-section__hint">זכרונות, משימות, מה לשפר — נשמר לשיעור הזה בלבד</p>
+              <p class="det-section__hint">זכרונות, משימות, מה לשפר</p>
             </div>
           </div>
           <textarea class="form-control" id="detLessonNotes" rows="3" placeholder="הערות…"></textarea>
-          <button type="button" class="btn btn-outline-primary btn-sm mt-2" onclick="detSaveNotes()">שמור הערות</button>
-          <div class="form-text text-success small d-none mt-1" id="detNotesSaveHint" aria-live="polite">ההערות נשמרו</div>
-        </div>
-
-        <div class="det-section det-section--price mb-3">
-          <div class="det-section__head">
-            <span class="det-section__icon" aria-hidden="true"><i class="bi bi-cash-stack"></i></span>
-            <div>
-              <h3 class="det-section__title">מחיר בשיעור זה</h3>
-              <p class="det-section__hint">רק למפגש הזה — לא משנה את ברירת המחדל של התלמיד</p>
-            </div>
-          </div>
-          <div class="input-group input-group-sm">
-            <input type="number" class="form-control" id="detPriceInput" min="0" step="1" inputmode="numeric" aria-describedby="detPriceSaveHint" />
-            <button type="button" class="btn btn-outline-primary px-3 fw-semibold" onclick="detSavePrice()">עדכן מחיר</button>
-          </div>
-          <div class="form-text text-success small d-none mt-1" id="detPriceSaveHint" aria-live="polite">המחיר עודכן</div>
         </div>
 
         <div class="det-section det-section--tools mb-2">
-          <h3 class="det-section__title det-section__title--solo mb-2">עריכה ושינויים</h3>
-          <button type="button" class="btn btn-primary btn-cal-edit" onclick="switchToEdit()">
-            <i class="bi bi-pencil-square me-2"></i>טופס מלא — תאריך, שעות, הערות…
+          <h3 class="det-section__title det-section__title--solo mb-2">שמירה</h3>
+          <button type="button" class="btn btn-primary btn-cal-edit btn-cal-edit--compact" onclick="detSaveAllDetails()">
+            <i class="bi bi-check-lg me-2"></i>שמור פרטים
           </button>
         </div>
 
@@ -157,52 +159,9 @@
           <button type="button" class="btn-cal-delete" onclick="detDeleteLesson()">
             <i class="bi bi-trash me-2"></i>מחק שיעור מהלוח
           </button>
-          <p class="text-muted small mt-2 mb-0 text-center">המחיקה מסירה את השיעור לצמיתות</p>
+          <p class="text-muted small mt-2 mb-0 text-center">מסירה את המופע מהלוח. אם השיעור שייך לחזרה — המחזור נשאר; שיעור חד־פעמי נמחק לגמרי.</p>
         </div>
-      </div>
-
-      <!-- Recurring slot -->
-      <div class="modal-body cal-det-body px-3 px-md-4 pb-3 pb-md-4" id="detBodyRecurring" style="display:none">
-        <div class="rounded-3 p-3 mb-3 alert-cal-recur d-flex gap-2 align-items-start">
-          <i class="bi bi-arrow-repeat mt-1 flex-shrink-0 fs-5"></i>
-          <div>
-            <strong class="d-block mb-1">שיעור מהמערכת הקבועה</strong>
-            <span class="small">אשרי את המפגש הזה, התאימי תאריך/שעה, או הסירי רק את המופע מהלוח (בלי לבטל את כל הקביעות).</span>
-          </div>
-        </div>
-        <div class="det-section mb-3">
-          <h3 class="det-section__title det-section__title--solo mb-2">מתי?</h3>
-          <label class="form-label small text-muted mb-1" for="detRecurDate">תאריך</label>
-          <input type="date" class="form-control form-control-lg mb-2" id="detRecurDate" />
-          <div class="row g-2">
-            <div class="col-6">
-              <label class="form-label small text-muted mb-1" for="detRecurStart">התחלה</label>
-              <input type="time" class="form-control form-control-lg" id="detRecurStart" />
-            </div>
-            <div class="col-6">
-              <label class="form-label small text-muted mb-1" for="detRecurEnd">סיום</label>
-              <input type="time" class="form-control form-control-lg" id="detRecurEnd" />
-            </div>
-          </div>
-        </div>
-        <div class="det-section det-section--price mb-3">
-          <label class="form-label fw-bold mb-1" for="detRecurPrice">מחיר לשיעור (₪)</label>
-          <input type="number" class="form-control form-control-lg" id="detRecurPrice" min="0" step="1" inputmode="numeric" />
-          <div class="form-text small text-muted mt-1">ברירת מחדל מהתלמיד — ניתן לשנות לפני האישור</div>
-        </div>
-        <div class="det-section mb-3">
-          <label class="form-label fw-bold mb-1" for="detRecurNotes">הערות לשיעור</label>
-          <textarea class="form-control" id="detRecurNotes" rows="2" placeholder="הערות (אופציונלי)…"></textarea>
-        </div>
-        <button type="button" class="btn btn-primary w-100 btn-lg mb-2 fw-bold" onclick="confirmRecurring()">
-          <i class="bi bi-check-lg me-1"></i>אשר ושמור שיעור
-        </button>
-        <button type="button" class="btn btn-outline-secondary w-100 mb-2" onclick="switchToEdit()">
-          <i class="bi bi-pencil-square me-1"></i>טופס מלא — הערות ושדות נוספים
-        </button>
-        <button type="button" class="btn-cal-remove-slot mb-0" onclick="removeRecurringFromCalendar()">
-          <i class="bi bi-calendar-x me-2"></i>הסר רק את המופע הזה מהלוח
-        </button>
+        </div><!-- /.cal-det-scroll-inner -->
       </div>
 
     </div>
@@ -210,101 +169,174 @@
 </div>
 
 
-<!-- Full edit -->
+<!-- Full edit / יצירה מהירה (ללא תשלום — נשמר מתוך כרטיס השיעור) -->
 <div class="modal fade" id="editModal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-lg modal-dialog-centered modal-dialog-scrollable">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable" id="editModalDialog">
     <div class="modal-content">
 
-      <div class="modal-header border-bottom py-3 bg-white">
+      <div class="modal-header border-bottom py-2 py-md-3 bg-white">
         <h5 class="modal-title fw-semibold text-dark mb-0" id="editModalTitle">עריכת שיעור</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="סגור"></button>
       </div>
 
-      <div class="modal-body p-4">
+      <div class="modal-body p-3 p-md-4 cal-edit-body--scroll" id="editModalBody">
+        <div class="cal-edit-scroll-inner">
         <form id="lessonForm" novalidate>
           <input type="hidden" id="lessonId" />
           <input type="hidden" id="recurringOrigDate" />
           <input type="hidden" id="recurringOrigStart" />
           <input type="hidden" id="recurringOrigEnd" />
+          <input type="hidden" id="lessonLinkedScheduleId" value="" />
 
-          <div class="row g-3 mb-3">
-            <div class="col-md-6">
-              <label class="form-label fw-bold">תלמיד</label>
-              <select class="form-select form-select-lg" id="lessonStudent" required></select>
+          <div id="lessonFormCore" class="lesson-form-core">
+            <p class="text-muted small mb-2 d-none" id="lessonFormCoreHint">נקבע מחיר מברירת המחדל של התלמיד — אפשר לסמן תשלום אחרי יצירת השיעור.</p>
+            <div class="row g-2 mb-2">
+              <div class="col-md-6">
+                <label class="form-label small fw-semibold mb-1" for="lessonStudentSearch">תלמיד</label>
+                <div class="cal-student-combobox position-relative">
+                  <input type="hidden" id="lessonStudent" name="student_id" value="" />
+                  <input
+                    type="text"
+                    class="form-control"
+                    id="lessonStudentSearch"
+                    autocomplete="off"
+                    placeholder="הקלידי לחיפוש או לחצי לרשימה"
+                    aria-autocomplete="list"
+                    aria-controls="lessonStudentDropdown"
+                    aria-expanded="false"
+                    role="combobox"
+                  />
+                  <ul
+                    class="cal-student-dropdown list-unstyled mb-0 d-none"
+                    id="lessonStudentDropdown"
+                    role="listbox"
+                    aria-label="תלמידים"
+                  ></ul>
+                </div>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small fw-semibold mb-1" for="lessonDate">תאריך</label>
+                <div class="input-group cal-time-input-group">
+                  <input type="date" class="form-control" id="lessonDate" required />
+                </div>
+              </div>
             </div>
-            <div class="col-md-6">
-              <label class="form-label fw-bold">תאריך</label>
-              <input type="date" class="form-control form-control-lg" id="lessonDate" required />
+
+            <div class="mb-2 d-none" id="lessonTypeRow">
+              <div class="form-label small fw-semibold mb-1">סוג שיעור</div>
+              <div class="d-flex flex-wrap gap-2 align-items-center">
+                <input type="radio" class="btn-check" name="lessonCreateType" id="lessonTypeOnce" value="once" checked autocomplete="off" />
+                <label class="btn btn-outline-secondary btn-sm px-3" for="lessonTypeOnce">חד-פעמי</label>
+                <input type="radio" class="btn-check" name="lessonCreateType" id="lessonTypeRecur" value="recurring" autocomplete="off" />
+                <label class="btn btn-outline-secondary btn-sm px-3" for="lessonTypeRecur">קבוע (שבועי)</label>
+                <input type="radio" class="btn-check" name="lessonCreateType" id="lessonTypeCustom" value="custom" autocomplete="off" />
+                <label class="btn btn-outline-secondary btn-sm px-3" for="lessonTypeCustom">מותאם</label>
+              </div>
+              <p class="text-muted small mb-0 mt-2 d-none" id="lessonEditRecurHint">
+                כמו ב«הוספת שיעור»: <strong>חד־פעמי</strong> — שיעור בודד בלוח (אם נוצר מלוח קבוע — מסיר את החזרות).
+                <strong>קבוע</strong> / <strong>מותאם</strong> — יוצר או מעדכן שיעור חוזר (שבועי, דו־שבועי או חודשי).
+                <span class="d-block mt-1">טיפ: <kbd class="px-1">Alt</kbd> + לחיצה על מקום קבוע — עריכה בלי לפתוח כרטיס.</span>
+              </p>
+              <p class="text-muted small mb-0 mt-2 d-none" id="lessonRecurHint">
+                נוסף ל־«שיעורים חוזרים» של התלמיד בדף הפרופיל (אותה טבלה). <strong>יום השבוע</strong> נקבע לפי התאריך שבחרת למעלה.
+                שדה ההערות למטה <strong>לא</strong> נשמר לשיעור קבוע — רק שעות ויום.
+              </p>
+              <div class="d-none mt-2 p-2 rounded border bg-light" id="lessonCustomRecurWrap">
+                <label class="form-label small fw-semibold mb-1" for="lessonCustomFreq">תדירות מותאמת</label>
+                <select class="form-select form-select-sm mb-2" id="lessonCustomFreq">
+                  <option value="biweekly">דו-שבועי — אותו יום בשבוע, פעם בשבועיים (התאריך למעלה = שבוע התחלה)</option>
+                  <option value="monthly">חודשי — אותו יום בחודש (1–31)</option>
+                </select>
+                <div class="d-none" id="lessonMonthlyDayWrap">
+                  <label class="form-label small mb-1" for="lessonMonthlyDay">יום בחודש</label>
+                  <input type="number" class="form-control form-control-sm" id="lessonMonthlyDay" min="1" max="31" value="1" />
+                  <p class="text-muted small mb-0 mt-1">בחודשים קצרים (למשל פברואר) ייקבע היום האחרון אם אין תאריך מתאים.</p>
+                </div>
+                <p class="text-muted small mb-0 mt-1 d-none" id="lessonBiweeklyHint">התאריך שבחרת למעלה קובע את <strong>שבוע הפתיחה</strong> ואת <strong>יום השבוע</strong> לשיעור הדו-שבועי.</p>
+              </div>
+            </div>
+
+            <div class="row g-2 mb-2">
+              <div class="col-6">
+                <label class="form-label small fw-semibold mb-1" for="lessonStart">שעת התחלה</label>
+                <div class="input-group cal-time-input-group">
+                  <input type="time" class="form-control cal-time-field" id="lessonStart" required step="60" />
+                  <button type="button" class="btn btn-outline-secondary cal-time-picker-btn px-2" data-time-target="lessonStart" title="בחירת שעה" aria-label="בחירת שעת התחלה">
+                    <i class="bi bi-clock" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </div>
+              <div class="col-6">
+                <label class="form-label small fw-semibold mb-1" for="lessonEnd">שעת סיום</label>
+                <div class="input-group cal-time-input-group">
+                  <input type="time" class="form-control cal-time-field" id="lessonEnd" required step="60" />
+                  <button type="button" class="btn btn-outline-secondary cal-time-picker-btn px-2" data-time-target="lessonEnd" title="בחירת שעה" aria-label="בחירת שעת סיום">
+                    <i class="bi bi-clock" aria-hidden="true"></i>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <div class="mb-0">
+              <label class="form-label small fw-semibold mb-1" for="lessonNotes">הערות (אופציונלי)</label>
+              <textarea class="form-control form-control-sm" id="lessonNotes" rows="2" placeholder="הערות…"></textarea>
             </div>
           </div>
 
-          <div class="row g-3 mb-3">
-            <div class="col-6">
-              <label class="form-label fw-bold">שעת התחלה</label>
-              <input type="time" class="form-control form-control-lg" id="lessonStart" required />
+          <div id="lessonFormExtras" class="d-none border-top pt-3 mt-3">
+            <div class="row g-2 mb-2">
+              <div class="col-md-4">
+                <label class="form-label small fw-semibold mb-1">מחיר (₪)</label>
+                <input type="number" class="form-control" id="lessonPrice" min="0" value="0" />
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small fw-semibold mb-1">סטטוס</label>
+                <select class="form-select" id="lessonStatus">
+                  <option value="scheduled">מתוכנן</option>
+                  <option value="completed">הושלם</option>
+                  <option value="cancelled">בוטל</option>
+                </select>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label small fw-semibold mb-1 d-block">תשלום</label>
+                <input type="hidden" id="lessonPaid" value="false" />
+                <button type="button" id="paidToggleBtn" class="unpaid btn btn-sm w-100" onclick="togglePaid()">
+                  <i class="bi bi-x-circle me-1"></i>לא שולם
+                </button>
+              </div>
             </div>
-            <div class="col-6">
-              <label class="form-label fw-bold">שעת סיום</label>
-              <input type="time" class="form-control form-control-lg" id="lessonEnd" required />
-            </div>
-          </div>
 
-          <div class="row g-3 mb-3">
-            <div class="col-md-4">
-              <label class="form-label fw-bold">מחיר (₪)</label>
-              <input type="number" class="form-control form-control-lg" id="lessonPrice" min="0" value="0" />
+            <div class="mb-2" id="editAttendanceBlock">
+              <label class="form-label small fw-semibold mb-1">נוכחות</label>
+              <input type="hidden" id="lessonAttendance" value="expected" />
+              <div class="d-flex flex-wrap gap-2">
+                <button type="button" class="edit-att-chip edit-att-exp" id="editChipExpected" onclick="setEditAttendance('expected')">ממתין לסימון</button>
+                <button type="button" class="edit-att-chip edit-att-arr" id="editChipArrived" onclick="setEditAttendance('arrived')">הגיע/ה</button>
+                <button type="button" class="edit-att-chip edit-att-ns" id="editChipNoShow" onclick="setEditAttendance('no_show')">לא הגיע/ה</button>
+              </div>
             </div>
-            <div class="col-md-4">
-              <label class="form-label fw-bold">סטטוס</label>
-              <select class="form-select form-select-lg" id="lessonStatus">
-                <option value="scheduled">מתוכנן</option>
-                <option value="completed">הושלם</option>
-                <option value="cancelled">בוטל</option>
-              </select>
-            </div>
-            <div class="col-md-4">
-              <label class="form-label fw-bold">תשלום</label>
-              <input type="hidden" id="lessonPaid" value="false" />
-              <button type="button" id="paidToggleBtn" class="unpaid" onclick="togglePaid()">
-                <i class="bi bi-x-circle me-1"></i>לא שולם
-              </button>
-            </div>
-          </div>
 
-          <div class="mb-3" id="editAttendanceBlock">
-            <label class="form-label fw-bold">נוכחות</label>
-            <input type="hidden" id="lessonAttendance" value="expected" />
-            <div class="d-flex flex-wrap gap-2">
-              <button type="button" class="edit-att-chip edit-att-exp" id="editChipExpected" onclick="setEditAttendance('expected')">ממתין לסימון</button>
-              <button type="button" class="edit-att-chip edit-att-arr" id="editChipArrived" onclick="setEditAttendance('arrived')">הגיע/ה</button>
-              <button type="button" class="edit-att-chip edit-att-ns" id="editChipNoShow" onclick="setEditAttendance('no_show')">לא הגיע/ה</button>
+            <div class="row g-2 mb-0 d-none" id="editPaidDetailsBlock">
+              <div class="col-md-6">
+                <label class="form-label small fw-semibold mb-1" for="lessonPaidAmount">סכום ששולם (₪)</label>
+                <input type="number" class="form-control" id="lessonPaidAmount" min="0" step="1" inputmode="numeric" placeholder="ריק = כמו מחיר השיעור" />
+              </div>
+              <div class="col-md-6">
+                <label class="form-label small fw-semibold mb-1" for="lessonPaymentMethod">אמצעי תשלום</label>
+                <select class="form-select" id="lessonPaymentMethod">
+                  <option value="cash">מזומן</option>
+                  <option value="bit">ביט</option>
+                  <option value="paybox">פייבוקס</option>
+                  <option value="other">אחר</option>
+                </select>
+              </div>
             </div>
-          </div>
-
-          <div class="row g-3 mb-3 d-none" id="editPaidDetailsBlock">
-            <div class="col-md-6">
-              <label class="form-label fw-bold" for="lessonPaidAmount">סכום ששולם (₪)</label>
-              <input type="number" class="form-control form-control-lg" id="lessonPaidAmount" min="0" step="1" inputmode="numeric" placeholder="ריק = כמו מחיר השיעור" />
-            </div>
-            <div class="col-md-6">
-              <label class="form-label fw-bold" for="lessonPaymentMethod">אמצעי תשלום</label>
-              <select class="form-select form-select-lg" id="lessonPaymentMethod">
-                <option value="cash">מזומן / עודף</option>
-                <option value="bit">ביט</option>
-                <option value="paybox">פייבוקס</option>
-                <option value="other">אחר</option>
-              </select>
-            </div>
-          </div>
-
-          <div>
-            <label class="form-label fw-bold">הערות לשיעור</label>
-            <textarea class="form-control" id="lessonNotes" rows="2" placeholder="הערות נוספות..."></textarea>
           </div>
         </form>
+        </div>
       </div>
 
-      <div class="modal-footer bg-light border-top flex-wrap gap-2">
+      <div class="modal-footer bg-light border-top flex-wrap gap-2 py-2">
         <button type="button" class="btn btn-outline-danger btn-lg order-1 order-md-0 d-none" id="btnDeleteLesson" onclick="deleteLesson()">
           <i class="bi bi-trash me-1"></i>מחק שיעור
         </button>

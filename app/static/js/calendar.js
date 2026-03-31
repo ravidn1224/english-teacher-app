@@ -4,6 +4,10 @@
 let calendar;
 let studentsList = [];
 let activeEvent = null;   // event currently shown in detailModal
+/** Stable DB id for detail actions after calendar refetch replaces Event objects */
+let activeLessonDbId = null;
+/** After opening a virtual recurring slot, keep schedule metadata for «עריכת תאריך ושעה» */
+let stashScheduleContext = null;
 let calHoverPreviewMoveHandler = null;
 let lastCalendarHoverId = null;
 let lastPointerHoverRoot = null;
@@ -17,6 +21,28 @@ let isDraggingCalendarEvent = false;
 // ── Bootstrap modal instances (created after DOM ready) ──────────────────────
 let detailModal;
 let editModal;
+
+function getDetailExtendedProps() {
+  if (!activeEvent || !activeEvent.extendedProps) return {};
+  return activeEvent.extendedProps;
+}
+
+function getActiveLessonId() {
+  if (activeLessonDbId != null && Number.isFinite(activeLessonDbId)) return activeLessonDbId;
+  if (!activeEvent) return NaN;
+  const raw = activeEvent.id;
+  if (raw == null || String(raw).startsWith('v-')) return NaN;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : NaN;
+}
+
+function resyncActiveEventAfterCalendarLoad() {
+  const modal = document.getElementById('detailModal');
+  if (!modal || !modal.classList.contains('show')) return;
+  if (activeLessonDbId == null || !Number.isFinite(activeLessonDbId) || !calendar) return;
+  const found = calendar.getEventById(String(activeLessonDbId)) || calendar.getEventById(activeLessonDbId);
+  if (found) activeEvent = found;
+}
 
 // ── Date/time helpers ────────────────────────────────────────────────────────
 function fmtTime(d) {
@@ -182,22 +208,414 @@ function escAttr(s) {
 /** Hebrew label for payment_method stored in DB */
 function paymentMethodLabel(code) {
   const c = String(code || '').toLowerCase();
-  if (c === 'cash') return 'מזומן/עודף';
+  if (c === 'cash') return 'מזומן';
   if (c === 'bit') return 'ביט';
   if (c === 'paybox') return 'פייבוקס';
   if (c === 'other') return 'אחר';
   return '';
 }
 
-/** Sync hidden select + chip buttons in lesson detail modal */
-function syncDetPaymentChips(method) {
+/** Sync payment method <select> + «אחר» note block in lesson detail modal */
+function syncDetPaymentMethodUI(method) {
   const sel = document.getElementById('detPaymentMethod');
   const m = String(method || 'cash').toLowerCase();
   const v = ['cash', 'bit', 'paybox', 'other'].includes(m) ? m : 'cash';
   if (sel) sel.value = v;
-  document.querySelectorAll('#detPaidRow .det-pay-chip').forEach(function (btn) {
-    btn.classList.toggle('active', btn.getAttribute('data-method') === v);
+  const otherWrap = document.getElementById('detPaymentOtherWrap');
+  if (otherWrap) otherWrap.classList.toggle('d-none', v !== 'other');
+}
+
+let detBalanceFeedbackTimer = null;
+
+function hideDetPaymentBalanceFeedback() {
+  const fb = document.getElementById('detPaymentBalanceFeedback');
+  if (fb) {
+    fb.classList.add('d-none');
+    fb.textContent = '';
+  }
+  if (detBalanceFeedbackTimer) {
+    clearTimeout(detBalanceFeedbackTimer);
+    detBalanceFeedbackTimer = null;
+  }
+}
+
+function showDetPaymentBalanceFeedback(message) {
+  const fb = document.getElementById('detPaymentBalanceFeedback');
+  if (!fb || !message) return;
+  fb.textContent = message;
+  fb.classList.remove('d-none');
+  if (detBalanceFeedbackTimer) clearTimeout(detBalanceFeedbackTimer);
+  detBalanceFeedbackTimer = setTimeout(function () {
+    hideDetPaymentBalanceFeedback();
+  }, 12000);
+}
+
+function parseDetMoneyInput(el) {
+  if (!el) return NaN;
+  const raw = String(el.value || '').trim();
+  if (raw === '') return 0;
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 0) return NaN;
+  return n;
+}
+
+function getDetailLessonPriceForSubmit() {
+  const ch = document.getElementById('detLessonCharge');
+  if (ch && !ch.disabled) {
+    const v = parseDetMoneyInput(ch);
+    if (Number.isFinite(v)) return v;
+  }
+  const ep = getDetailExtendedProps();
+  const p = Number(ep.price);
+  return Number.isFinite(p) ? p : 0;
+}
+
+/** Valid price from charge field, or null after alert. */
+function requireDetailLessonPriceOrAlert() {
+  const ch = document.getElementById('detLessonCharge');
+  if (ch && !ch.disabled) {
+    const v = parseDetMoneyInput(ch);
+    if (!Number.isFinite(v)) {
+      alert('נא להזין חיוב לשיעור תקין (מספר ≥ 0).');
+      return null;
+    }
+    return v;
+  }
+  return getDetailLessonPriceForSubmit();
+}
+
+function syncDetPaymentDatasetsFromExtendedProps() {
+  const wrap = document.getElementById('detPayChargeAndBalance');
+  if (!wrap) return;
+  const ep = getDetailExtendedProps();
+  wrap.dataset.serverStudentBalance = String(Number(ep.studentBalance) || 0);
+  wrap.dataset.lessonBalanceApplied = String(
+    ep.balanceApplied != null && ep.balanceApplied !== '' ? Number(ep.balanceApplied) : 0
+  );
+}
+
+/** Live preview: balance if this lesson were saved with current חיוב / סכום ששולם (same net as server). */
+function updateDetBalancePreview() {
+  const wrap = document.getElementById('detPayChargeAndBalance');
+  const balEl = document.getElementById('detStudentBalanceLine');
+  if (!wrap || !balEl) return;
+  const serverBal = Number(wrap.dataset.serverStudentBalance) || 0;
+  const applied = Number(wrap.dataset.lessonBalanceApplied) || 0;
+  let charge = parseDetMoneyInput(document.getElementById('detLessonCharge'));
+  let paid = parseDetMoneyInput(document.getElementById('detPaidAmount'));
+  if (!Number.isFinite(charge)) charge = 0;
+  if (!Number.isFinite(paid)) paid = 0;
+  const preview = serverBal - applied + (paid - charge);
+  balEl.textContent = formatDetStudentBalanceLine(preview);
+}
+
+function formatDetStudentBalanceLine(balance) {
+  const b = Number(balance) || 0;
+  let core;
+  if (b > 0) core = 'יתרה נוכחית: ‎+₪' + b;
+  else if (b < 0) core = 'יתרה נוכחית: ' + (-b) + '- ₪';
+  else core = 'יתרה נוכחית: ‎₪0';
+  return core + ' (חיובי = זיכוי, שלילי = חוב)';
+}
+
+async function readLessonUpdateJson(res) {
+  try {
+    const t = await res.text();
+    if (!t) return {};
+    return JSON.parse(t);
+  } catch (e) {
+    return {};
+  }
+}
+
+function mergeLessonBalanceFromResponse(data) {
+  if (!data || typeof activeEvent.setExtendedProp !== 'function') return;
+  if (data.student_balance != null) activeEvent.setExtendedProp('studentBalance', data.student_balance);
+  if (data.lesson_balance_applied != null) activeEvent.setExtendedProp('balanceApplied', data.lesson_balance_applied);
+}
+
+function syncDetailPriceFromChargeInput() {
+  const ch = document.getElementById('detLessonCharge');
+  if (!ch || ch.disabled || typeof activeEvent.setExtendedProp !== 'function') return;
+  const v = parseDetMoneyInput(ch);
+  if (Number.isFinite(v)) activeEvent.setExtendedProp('price', v);
+}
+
+/** Refresh balance preview from server numbers; optional payment hint. */
+function mergeLessonUpdateIntoDetailUi(data, options) {
+  if (!data || typeof data !== 'object') return;
+  mergeLessonBalanceFromResponse(data);
+  syncDetPaymentDatasetsFromExtendedProps();
+  syncDetailPriceFromChargeInput();
+  updateDetBalancePreview();
+  if (options && options.showBalanceHint && data.balance_hint_he) {
+    showDetPaymentBalanceFeedback(data.balance_hint_he);
+  }
+}
+
+async function detPersistGroupLessonOnly() {
+  const ep = getDetailExtendedProps();
+  if (!activeEvent || ep.isRecurring === true || ep.status === 'cancelled') return;
+  const lessonId = getActiveLessonId();
+  if (!Number.isFinite(lessonId)) return;
+  const cb = document.getElementById('detIsGroupLesson');
+  if (!cb || cb.disabled) return;
+  const fd = new FormData();
+  fd.append('is_group_lesson', cb.checked ? 'true' : 'false');
+  const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
+  const data = await readLessonUpdateJson(res);
+  if (res.ok && typeof activeEvent.setExtendedProp === 'function') {
+    activeEvent.setExtendedProp('isGroupLesson', cb.checked);
+    mergeLessonBalanceFromResponse(data);
+    syncDetPaymentDatasetsFromExtendedProps();
+    updateDetBalancePreview();
+  }
+}
+
+function bumpLessonEndFromStart() {
+  const startEl = document.getElementById('lessonStart');
+  const endEl = document.getElementById('lessonEnd');
+  if (!startEl || !endEl || !startEl.value) return;
+  const parts = startEl.value.split(':');
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  if (!Number.isFinite(h)) return;
+  const d = new Date(2000, 0, 1, h, Number.isFinite(m) ? m : 0);
+  d.setHours(d.getHours() + 1);
+  endEl.value = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+function setEditModalSize(compact) {
+  const dlg = document.getElementById('editModalDialog');
+  if (!dlg) return;
+  dlg.classList.remove('modal-sm', 'modal-lg', 'cal-edit-modal--create');
+  if (compact) dlg.classList.add('cal-edit-modal--create');
+  else dlg.classList.add('modal-lg');
+}
+
+function syncLessonCustomFreqFields() {
+  const freqEl = document.getElementById('lessonCustomFreq');
+  const monthlyWrap = document.getElementById('lessonMonthlyDayWrap');
+  const biHint = document.getElementById('lessonBiweeklyHint');
+  if (!freqEl || !monthlyWrap) return;
+  const v = freqEl.value;
+  monthlyWrap.classList.toggle('d-none', v !== 'monthly');
+  if (biHint) biHint.classList.toggle('d-none', v !== 'biweekly');
+}
+
+function syncLessonCreateTypeHints() {
+  const onceR = document.getElementById('lessonTypeOnce');
+  const recurR = document.getElementById('lessonTypeRecur');
+  const customR = document.getElementById('lessonTypeCustom');
+  const recurHint = document.getElementById('lessonRecurHint');
+  const customWrap = document.getElementById('lessonCustomRecurWrap');
+  if (recurHint) {
+    recurHint.classList.toggle('d-none', !(recurR && recurR.checked));
+  }
+  if (customWrap) {
+    customWrap.classList.toggle('d-none', !(customR && customR.checked));
+  }
+  if (customR && customR.checked) {
+    syncLessonCustomFreqFields();
+  }
+}
+
+/** App day_of_week (0=Sun … 6=Sat) from lesson_date YYYY-MM-DD — matches RegularSchedule + student page. */
+function dateStringToAppDayOfWeek(dateStr) {
+  const parts = String(dateStr || '').split('-');
+  if (parts.length < 3) return 0;
+  const y = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  const d = parseInt(parts[2], 10);
+  if (!Number.isFinite(y) || !Number.isFinite(m) || !Number.isFinite(d)) return 0;
+  const dt = new Date(y, m - 1, d);
+  const jsDow = dt.getDay();
+  const pythonWd = (jsDow + 6) % 7;
+  return (pythonWd + 1) % 7;
+}
+
+/** FormData for POST /api/lessons/recurring-schedule/add — same rules as «הוספת שיעור». */
+function buildRecurringScheduleAddFormData(studentId, newDate, newStart, newEnd, isCustomRecur) {
+  const fd = new FormData();
+  fd.append('student_id', studentId);
+  fd.append('day_of_week', String(dateStringToAppDayOfWeek(newDate)));
+  fd.append('start_time', newStart);
+  fd.append('end_time', newEnd);
+  if (isCustomRecur) {
+    const freqEl = document.getElementById('lessonCustomFreq');
+    const freq = freqEl && freqEl.value ? freqEl.value : 'biweekly';
+    fd.append('frequency', freq);
+    if (freq === 'biweekly') {
+      fd.append('anchor_date', newDate);
+    } else if (freq === 'monthly') {
+      const mdEl = document.getElementById('lessonMonthlyDay');
+      const dom = mdEl ? parseInt(String(mdEl.value).trim(), 10) : NaN;
+      if (!Number.isFinite(dom) || dom < 1 || dom > 31) {
+        return null;
+      }
+      fd.append('day_of_month', String(dom));
+    }
+  } else {
+    fd.append('frequency', 'weekly');
+  }
+  return fd;
+}
+
+function syncLessonPriceFromStudentId(studentId) {
+  const priceEl = document.getElementById('lessonPrice');
+  if (!priceEl) return;
+  const rec = studentsList.find(function (s) {
+    return String(s.id) === String(studentId);
   });
+  if (rec && rec.default_price != null && rec.default_price !== '') {
+    priceEl.value = String(rec.default_price);
+  }
+}
+
+function lessonStudentDropdownOpen(open) {
+  const dd = document.getElementById('lessonStudentDropdown');
+  const inp = document.getElementById('lessonStudentSearch');
+  if (!dd || !inp) return;
+  if (open) {
+    dd.classList.remove('d-none');
+    inp.setAttribute('aria-expanded', 'true');
+  } else {
+    dd.classList.add('d-none');
+    inp.setAttribute('aria-expanded', 'false');
+  }
+}
+
+function renderLessonStudentDropdown(filterText) {
+  const dd = document.getElementById('lessonStudentDropdown');
+  if (!dd) return;
+  const q = String(filterText || '').trim().toLowerCase();
+  dd.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  let any = false;
+  studentsList.forEach(function (s) {
+    const name = s.name || '';
+    if (q && !name.toLowerCase().includes(q)) return;
+    any = true;
+    const li = document.createElement('li');
+    li.setAttribute('role', 'option');
+    li.className = 'cal-student-dropdown__item';
+    li.setAttribute('data-id', String(s.id));
+    li.textContent = name;
+    frag.appendChild(li);
+  });
+  if (!any) {
+    const li = document.createElement('li');
+    li.className = 'cal-student-dropdown__empty text-muted small px-3 py-2';
+    li.textContent = q ? 'אין תוצאות — נסי טקסט אחר' : 'אין תלמידים ברשימה';
+    frag.appendChild(li);
+  }
+  dd.appendChild(frag);
+}
+
+function setLessonStudentComboboxValue(studentId) {
+  const hidden = document.getElementById('lessonStudent');
+  const search = document.getElementById('lessonStudentSearch');
+  if (!hidden || !search) return;
+  if (studentId == null || studentId === '') {
+    hidden.value = '';
+    search.value = '';
+    lessonStudentDropdownOpen(false);
+    return;
+  }
+  const rec = studentsList.find(function (s) {
+    return String(s.id) === String(studentId);
+  });
+  hidden.value = String(studentId);
+  search.value = rec ? rec.name : '';
+  lessonStudentDropdownOpen(false);
+  syncLessonPriceFromStudentId(studentId);
+}
+
+function setupLessonStudentCombobox() {
+  const wrap = document.querySelector('.cal-student-combobox');
+  const search = document.getElementById('lessonStudentSearch');
+  const dd = document.getElementById('lessonStudentDropdown');
+  if (!wrap || !search || !dd) return;
+  if (wrap.dataset.comboBound) return;
+  wrap.dataset.comboBound = '1';
+
+  search.addEventListener('focus', function () {
+    renderLessonStudentDropdown(search.value);
+    lessonStudentDropdownOpen(true);
+  });
+
+  search.addEventListener('input', function () {
+    renderLessonStudentDropdown(search.value);
+    lessonStudentDropdownOpen(true);
+    const hidden = document.getElementById('lessonStudent');
+    if (hidden) {
+      const rec = studentsList.find(function (s) {
+        return String(s.id) === hidden.value;
+      });
+      if (!rec || rec.name !== search.value.trim()) {
+        hidden.value = '';
+      }
+    }
+  });
+
+  dd.addEventListener('mousedown', function (e) {
+    const item = e.target.closest('.cal-student-dropdown__item');
+    if (!item) return;
+    e.preventDefault();
+    const id = item.getAttribute('data-id');
+    if (id) {
+      setLessonStudentComboboxValue(id);
+    }
+  });
+
+  document.addEventListener(
+    'click',
+    function (e) {
+      if (!wrap.contains(e.target)) lessonStudentDropdownOpen(false);
+    },
+    true
+  );
+
+  search.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') {
+      lessonStudentDropdownOpen(false);
+      search.blur();
+    }
+  });
+}
+
+function bindLessonFormTimeControls() {
+  const startEl = document.getElementById('lessonStart');
+  if (startEl && !startEl.dataset.calEndBound) {
+    startEl.dataset.calEndBound = '1';
+    startEl.addEventListener('change', bumpLessonEndFromStart);
+    startEl.addEventListener('input', bumpLessonEndFromStart);
+  }
+  document.querySelectorAll('.cal-time-picker-btn').forEach(function (btn) {
+    if (btn.dataset.calBound) return;
+    btn.dataset.calBound = '1';
+    btn.addEventListener('click', function () {
+      const id = btn.getAttribute('data-time-target');
+      const inp = id && document.getElementById(id);
+      if (inp && typeof inp.showPicker === 'function') {
+        try {
+          inp.showPicker();
+        } catch (e) {
+          inp.focus();
+        }
+      } else if (inp) {
+        inp.focus();
+      }
+    });
+  });
+}
+
+function detPaymentNoteForSubmit() {
+  const sel = document.getElementById('detPaymentMethod');
+  const pm = (sel && sel.value ? sel.value : 'cash').trim();
+  if (pm !== 'other') return '';
+  const ta = document.getElementById('detPaymentOtherNote');
+  return (ta && ta.value ? ta.value : '').trim();
 }
 
 /** Native tooltip (title) — shown on hover */
@@ -218,7 +636,10 @@ function eventHoverTitle(ev) {
   let payExtra = '';
   if (p.isPaid) {
     const amt = p.paidAmount != null && p.paidAmount !== '' ? Number(p.paidAmount) : p.price;
-    const pm = paymentMethodLabel(p.paymentMethod);
+    let pm = paymentMethodLabel(p.paymentMethod);
+    if ((p.paymentMethod || '').toLowerCase() === 'other' && p.paymentNote) {
+      pm = `אחר: ${String(p.paymentNote).trim()}`;
+    }
     if (Number.isFinite(amt)) payExtra = `\nשולם ${amt} ₪${pm ? ' · ' + pm : ''}`;
   }
   const noteLine =
@@ -433,31 +854,47 @@ function showCalHoverPreview(ev, clientX, clientY) {
 // ── Students list ────────────────────────────────────────────────────────────
 async function loadStudents() {
   studentsList = await fetchJsonWithRetry('/api/students-list', {});
-  const sel = document.getElementById('lessonStudent');
-  sel.innerHTML = '<option value="">-- בחר תלמיד --</option>';
-  studentsList.forEach(s => {
-    const opt = document.createElement('option');
-    opt.value = s.id;
-    opt.text  = s.name;
-    opt.dataset.price = s.default_price;
-    sel.appendChild(opt);
-  });
+  renderLessonStudentDropdown('');
+  setupLessonStudentCombobox();
 }
 
 // ── Calendar init ────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async function () {
   detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
   editModal   = new bootstrap.Modal(document.getElementById('editModal'));
+  document.getElementById('detailModal').addEventListener('hidden.bs.modal', function () {
+    activeLessonDbId = null;
+  });
+  bindLessonFormTimeControls();
 
-  const detPaidRowEl = document.getElementById('detPaidRow');
-  if (detPaidRowEl) {
-    detPaidRowEl.addEventListener('click', function (e) {
-      const chip = e.target.closest('.det-pay-chip');
-      if (!chip) return;
-      e.preventDefault();
-      syncDetPaymentChips(chip.getAttribute('data-method'));
+  const detPmSel = document.getElementById('detPaymentMethod');
+  if (detPmSel) {
+    detPmSel.addEventListener('change', function () {
+      syncDetPaymentMethodUI(detPmSel.value);
     });
   }
+  const detGrp = document.getElementById('detIsGroupLesson');
+  if (detGrp && !detGrp.dataset.bound) {
+    detGrp.dataset.bound = '1';
+    detGrp.addEventListener('change', function () {
+      void detPersistGroupLessonOnly();
+    });
+  }
+  (function bindDetPaymentPreviewInputs() {
+    const ch = document.getElementById('detLessonCharge');
+    const pa = document.getElementById('detPaidAmount');
+    function onInput() {
+      updateDetBalancePreview();
+    }
+    if (ch && !ch.dataset.previewBound) {
+      ch.dataset.previewBound = '1';
+      ch.addEventListener('input', onInput);
+    }
+    if (pa && !pa.dataset.previewBound) {
+      pa.dataset.previewBound = '1';
+      pa.addEventListener('input', onInput);
+    }
+  })();
 
   try {
     await loadStudents();
@@ -473,7 +910,8 @@ document.addEventListener('DOMContentLoaded', async function () {
     headerToolbar: {
       start: 'prev,next today',
       center: 'title',
-      end: 'dayGridMonth,timeGridWeek,timeGridDay',
+      /* RTL: DOM order Day→Week→Month renders as Month | Week | Day left→right */
+      end: 'timeGridDay,timeGridWeek,dayGridMonth',
     },
     buttonText: { today: 'היום', month: 'חודש', week: 'שבוע', day: 'יום' },
     /* Full day in week/day views (was 07:00–22:00, which hid early/late lessons) */
@@ -603,18 +1041,27 @@ document.addEventListener('DOMContentLoaded', async function () {
         .catch(failureCallback);
     },
 
+    eventsSet: function () {
+      requestAnimationFrame(resyncActiveEventAfterCalendarLoad);
+    },
+
     // ── Click on existing event → detail card ────────────────────
     eventClick: function (info) {
       info.jsEvent.preventDefault();
       info.jsEvent.stopPropagation();
-      openDetailCard(info.event);
+      const p = info.event.extendedProps || {};
+      if (p.isRecurring === true && info.jsEvent.altKey) {
+        openFullEditModal(info.event, null);
+        return;
+      }
+      void openDetailCard(info.event);
     },
 
     // ── Click on empty slot → new lesson form ────────────────────
     dateClick: function (info) {
       const evObj = resolveEventFromClientPoint(info.jsEvent.clientX, info.jsEvent.clientY);
       if (evObj) {
-        openDetailCard(evObj);
+        void openDetailCard(evObj);
         return;
       }
       openNewLessonModalOnDate(info.dateStr);
@@ -634,13 +1081,28 @@ document.addEventListener('DOMContentLoaded', async function () {
     }
   });
 
-  // Auto-fill price when student is selected
-  document.getElementById('lessonStudent').addEventListener('change', function () {
-    const opt = this.options[this.selectedIndex];
-    if (opt && opt.dataset.price) {
-      document.getElementById('lessonPrice').value = opt.dataset.price;
-    }
-  });
+  const onceRadio = document.getElementById('lessonTypeOnce');
+  const recurRadio = document.getElementById('lessonTypeRecur');
+  const customRadio = document.getElementById('lessonTypeCustom');
+  const freqSel = document.getElementById('lessonCustomFreq');
+  const lessonDateEl = document.getElementById('lessonDate');
+  if (onceRadio) onceRadio.addEventListener('change', syncLessonCreateTypeHints);
+  if (recurRadio) recurRadio.addEventListener('change', syncLessonCreateTypeHints);
+  if (customRadio) customRadio.addEventListener('change', syncLessonCreateTypeHints);
+  if (freqSel) freqSel.addEventListener('change', syncLessonCustomFreqFields);
+  if (lessonDateEl) {
+    lessonDateEl.addEventListener('change', function () {
+      if (!customRadio || !customRadio.checked) return;
+      const freqEl = document.getElementById('lessonCustomFreq');
+      if (!freqEl || freqEl.value !== 'monthly') return;
+      const parts = lessonDateEl.value.split('-');
+      const md = document.getElementById('lessonMonthlyDay');
+      if (parts.length >= 3 && md) {
+        const d = parseInt(parts[2], 10);
+        if (Number.isFinite(d)) md.value = String(Math.min(31, Math.max(1, d)));
+      }
+    });
+  }
 
   applyCalendarUrlParams();
 });
@@ -665,11 +1127,7 @@ function applyCalendarUrlParams() {
     document.getElementById('lessonDate').value = d.slice(0, 10);
   }
   if (sid) {
-    const sel = document.getElementById('lessonStudent');
-    for (let i = 0; i < sel.options.length; i++) {
-      sel.options[i].selected = sel.options[i].value === String(sid);
-    }
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    setLessonStudentComboboxValue(sid);
   }
   try {
     if (window.history && window.history.replaceState) {
@@ -693,7 +1151,7 @@ document.addEventListener(
     if (!evObj) return;
     e.preventDefault();
     e.stopPropagation();
-    openDetailCard(evObj);
+    void openDetailCard(evObj);
   },
   true
 );
@@ -702,105 +1160,185 @@ document.addEventListener(
 //  DETAIL CARD  (Google-Calendar style)
 // ════════════════════════════════════════════════════════════════════════════
 
-function openDetailCard(event) {
+var detSaveBannerTimer = null;
+function hideDetSavedBanner() {
+  const el = document.getElementById('detSavedBanner');
+  if (el) el.classList.add('d-none');
+  if (detSaveBannerTimer) {
+    clearTimeout(detSaveBannerTimer);
+    detSaveBannerTimer = null;
+  }
+}
+function showDetSavedBanner() {
+  const el = document.getElementById('detSavedBanner');
+  if (!el) return;
+  if (detSaveBannerTimer) clearTimeout(detSaveBannerTimer);
+  const body = document.getElementById('detBodyReal');
+  if (body) {
+    try {
+      body.scrollTo({ top: 0, behavior: 'smooth' });
+    } catch (e) {
+      body.scrollTop = 0;
+    }
+  }
+  el.classList.remove('d-none');
+  detSaveBannerTimer = setTimeout(function () {
+    el.classList.add('d-none');
+    detSaveBannerTimer = null;
+  }, 3500);
+}
+
+async function openDetailCard(event, options) {
+  options = options || {};
+  const p0 = event.extendedProps || {};
+
+  if (p0.isRecurring === true && !options.skipMaterialize) {
+    stashScheduleContext = {
+      scheduleId: p0.scheduleId,
+      scheduleFrequency: p0.scheduleFrequency || 'weekly',
+      scheduleDayOfMonth: p0.scheduleDayOfMonth,
+    };
+    try {
+      const fd = new FormData();
+      fd.append('student_id', String(p0.studentId));
+      fd.append('slot_date', toInputDate(event.start));
+      fd.append('start_time', toInputTime(event.start));
+      fd.append('end_time', toInputTime(getEventEnd(event)));
+      const res = await fetch('/api/lessons/materialize-from-slot', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error('materialize failed');
+      const data = await res.json();
+      const rf = calendar.refetchEvents();
+      if (rf && typeof rf.then === 'function') {
+        await rf;
+      } else {
+        await new Promise(function (resolve) {
+          setTimeout(resolve, 200);
+        });
+      }
+      let evObj = calendar.getEventById(String(data.id));
+      if (!evObj) evObj = calendar.getEventById(Number(data.id));
+      if (evObj) {
+        await openDetailCard(evObj, { skipMaterialize: true });
+        return;
+      }
+      alert('השיעור נוצר — רענני את הלוח אם הכרטיס לא נפתח.');
+    } catch (err) {
+      console.warn(err);
+      alert('לא ניתן לפתוח את השיעור. נסי שוב.');
+    }
+    stashScheduleContext = null;
+    return;
+  }
+
+  if (!options.skipMaterialize) {
+    stashScheduleContext = null;
+  }
+
   hideCalHoverPreview();
   activeEvent = event;
-  const p = event.extendedProps;
+  const rawEid = event.id;
+  if (rawEid != null && !String(rawEid).startsWith('v-')) {
+    const num = Number(rawEid);
+    activeLessonDbId = Number.isFinite(num) ? num : null;
+  } else {
+    activeLessonDbId = null;
+  }
+  const p = event.extendedProps || {};
 
-  // Header text
-  document.getElementById('detName').textContent =
-    event.title + (p.isRecurring ? '  🔁' : '');
+  document.getElementById('detName').textContent = event.title || '';
   const endForDisplay = getEventEnd(event);
   document.getElementById('detTime').textContent =
     fmtDate(event.start) + '   ' + fmtTime(event.start) + ' – ' + fmtTime(endForDisplay);
 
-  const priceInput = document.getElementById('detPriceInput');
-  const priceHint = document.getElementById('detPriceSaveHint');
-  if (priceHint) priceHint.classList.add('d-none');
-
-  // Status stripe: light blue=ממתין, royal blue=הגיע, grey=no show, green=paid, sky=recurring
+  const editWhenBtn = document.getElementById('detBtnEditWhen');
   const header = document.getElementById('detHeader');
   const att = p.attendance || 'expected';
+  const cancelled = p.status === 'cancelled';
   header.classList.remove('s-paid', 's-attended', 's-expected', 's-no-show', 's-recurring', 's-cancelled');
-  if (p.isRecurring)               header.classList.add('s-recurring');
-  else if (p.status === 'cancelled') header.classList.add('s-cancelled');
-  else if (p.isPaid)               header.classList.add('s-paid');
-  else if (att === 'no_show')      header.classList.add('s-no-show');
-  else if (att === 'arrived')      header.classList.add('s-attended');
-  else                             header.classList.add('s-expected');
+  if (p.status === 'cancelled') header.classList.add('s-cancelled');
+  else if (p.isPaid) header.classList.add('s-paid');
+  else if (att === 'no_show') header.classList.add('s-no-show');
+  else if (att === 'arrived') header.classList.add('s-attended');
+  else header.classList.add('s-expected');
 
-  const isRecurring = p.isRecurring === true;
-  document.getElementById('detBodyReal').style.display      = isRecurring ? 'none' : 'block';
-  document.getElementById('detBodyRecurring').style.display = isRecurring ? 'block' : 'none';
+  if (editWhenBtn) {
+    editWhenBtn.style.display = cancelled ? 'none' : '';
+  }
+
+  const detBody = document.getElementById('detBodyReal');
+  detBody.style.display = 'block';
+  detBody.scrollTop = 0;
 
   const paidRow = document.getElementById('detPaidRow');
-  if (isRecurring) {
-    document.getElementById('detRecurDate').value  = toInputDate(event.start);
-    document.getElementById('detRecurStart').value = toInputTime(event.start);
-    document.getElementById('detRecurEnd').value   = toInputTime(getEventEnd(event));
-    const rp = document.getElementById('detRecurPrice');
-    if (rp) {
-      rp.value = p.price != null && p.price !== '' ? String(p.price) : '';
-    }
-    const rn = document.getElementById('detRecurNotes');
-    if (rn) rn.value = '';
-  } else {
-    const pr = p.price != null && p.price !== '' ? Number(p.price) : 0;
-    if (priceInput) priceInput.value = Number.isFinite(pr) ? pr : 0;
-    const cancelled = p.status === 'cancelled';
-    const isPaid = p.isPaid === true;
-    paidRow.classList.toggle('d-none', cancelled);
-    if (!cancelled) _syncDetailPaidBtn(isPaid);
-    _syncDetailAttendanceUI(att, cancelled, isPaid);
+  const isPaid = p.isPaid === true;
+  paidRow.classList.toggle('d-none', cancelled);
+  if (!cancelled) _syncDetailPaidDualButtons(isPaid);
+  _syncDetailAttendanceUI(att, cancelled, isPaid);
 
-    const notesSec = document.getElementById('detNotesSection');
-    if (notesSec) notesSec.classList.toggle('d-none', cancelled);
-    const detNotes = document.getElementById('detLessonNotes');
-    if (detNotes) detNotes.value = p.notes != null ? String(p.notes) : '';
-    const nHint = document.getElementById('detNotesSaveHint');
-    if (nHint) nHint.classList.add('d-none');
+  const notesSec = document.getElementById('detNotesSection');
+  if (notesSec) notesSec.classList.toggle('d-none', cancelled);
+  const detNotes = document.getElementById('detLessonNotes');
+  if (detNotes) detNotes.value = p.notes != null ? String(p.notes) : '';
+  hideDetSavedBanner();
+  hideDetPaymentBalanceFeedback();
 
-    const paidAmtEl = document.getElementById('detPaidAmount');
-    const prn = p.price != null && p.price !== '' ? Number(p.price) : 0;
-    const stored = p.paidAmount != null && p.paidAmount !== '' ? Number(p.paidAmount) : NaN;
-    if (paidAmtEl) {
-      if (isPaid && Number.isFinite(stored)) {
-        paidAmtEl.value = String(stored);
-      } else if (isPaid && Number.isFinite(prn)) {
-        paidAmtEl.value = String(prn);
-      } else if (!isPaid && Number.isFinite(prn)) {
-        paidAmtEl.value = String(prn);
-      } else {
-        paidAmtEl.value = '';
-      }
+  const paidAmtEl = document.getElementById('detPaidAmount');
+  const prn = p.price != null && p.price !== '' ? Number(p.price) : 0;
+  const isVirtRecurring = p.isRecurring === true;
+  const detLessonChargeEl = document.getElementById('detLessonCharge');
+  if (detLessonChargeEl) {
+    detLessonChargeEl.value = Number.isFinite(prn) ? String(prn) : '0';
+    detLessonChargeEl.disabled = !!(cancelled || isVirtRecurring || activeLessonDbId == null);
+  }
+  const detGroupRow = document.getElementById('detGroupLessonRow');
+  const detGroupCb = document.getElementById('detIsGroupLesson');
+  if (detGroupRow) detGroupRow.classList.toggle('d-none', cancelled || isVirtRecurring);
+  if (detGroupCb) {
+    detGroupCb.checked = p.isGroupLesson === true;
+    detGroupCb.disabled = !!(cancelled || isVirtRecurring || activeLessonDbId == null);
+  }
+  const stored = p.paidAmount != null && p.paidAmount !== '' ? Number(p.paidAmount) : NaN;
+  if (paidAmtEl) {
+    if (isPaid && Number.isFinite(stored)) {
+      paidAmtEl.value = String(stored);
+    } else if (isPaid && Number.isFinite(prn)) {
+      paidAmtEl.value = String(prn);
+    } else if (!isPaid && Number.isFinite(prn)) {
+      paidAmtEl.value = String(prn);
+    } else {
+      paidAmtEl.value = '';
     }
-    syncDetPaymentChips(p.paymentMethod || 'bit');
-    const paySaveBtn = document.getElementById('detSavePaymentDetailsBtn');
-    if (paySaveBtn) paySaveBtn.classList.toggle('d-none', !isPaid);
-    const payHint = document.getElementById('detPaymentSaveHint');
-    if (payHint) payHint.classList.add('d-none');
-    const payHintLabel = document.getElementById('detPayHint');
-    if (payHintLabel && !cancelled) {
-      payHintLabel.textContent = isPaid
-        ? 'שולם ✓ — אפשר לעדכן סכום/אמצעי וללחוץ «עדכן סכום ואמצעי»'
-        : 'בחרי ביט / מזומן / פייבוקס, התאימי סכום, ואז לחצי «שולם» למטה';
-    }
+  }
+  if (!cancelled) {
+    syncDetPaymentDatasetsFromExtendedProps();
+    updateDetBalancePreview();
+  }
+  const otherNoteEl = document.getElementById('detPaymentOtherNote');
+  if (otherNoteEl) otherNoteEl.value = p.paymentNote != null ? String(p.paymentNote) : '';
+  syncDetPaymentMethodUI(p.paymentMethod || 'cash');
+  const paySaveBtn = document.getElementById('detSavePaymentDetailsBtn');
+  if (paySaveBtn) paySaveBtn.classList.toggle('d-none', !isPaid);
+  const payHintLabel = document.getElementById('detPayHint');
+  if (payHintLabel && !cancelled) {
+    payHintLabel.textContent = isPaid
+      ? 'שולם ✓ — אפשר לעדכן סכום/אמצעי וללחוץ «עדכן סכום ואמצעי» או «שמור פרטים».'
+      : 'בחרי אמצעי וסכום, ואז לחצי «שולם» או «לא שולם».';
+  }
 
-    const micro = document.getElementById('detMicroHint');
-    if (micro) {
-      micro.classList.remove('d-none');
-      let msg = 'כל סימון נשמר מיד בלחיצה.';
-      if (cancelled) {
-        msg =
-          'שיעור בוטל — נוכחות ותשלום לא רלוונטיים. אפשר לערוך או למחוק למטה.';
-      } else if (isPaid) {
-        msg =
-          'שולם ✓ — אפשר לדייק סכום ואמצעי למעלה, מחיר בשיעור למטה, והערות.';
-      } else {
-        msg = 'נוכחות למעלה · תשלום: בוחרים אמצעי וסכום, ואז מסמנים שולם.';
-      }
-      micro.textContent = msg;
+  const micro = document.getElementById('detMicroHint');
+  if (micro) {
+    micro.classList.remove('d-none');
+    let msg = 'נוכחות נשמרת מיד · לתשלום אפשר «שמור פרטים» או לעדכן ולסמן שולם.';
+    if (cancelled) {
+      msg =
+        'שיעור בוטל — נוכחות ותשלום לא רלוונטיים. אפשר לערוך או למחוק למטה.';
+    } else if (isPaid) {
+      msg =
+        'שולם ✓ — אפשר לדייק סכום ואמצעי למעלה · «שמור פרטים» לעדכון ההערות והתשלום יחד.';
+    } else {
+      msg = 'נוכחות למעלה · תשלום: בוחרים אמצעי וסכום, ואז «שולם» או «לא שולם».';
     }
+    micro.textContent = msg;
   }
 
   detailModal.show();
@@ -819,14 +1357,17 @@ function _syncDetailAttendanceUI(att, cancelled, isPaid) {
 }
 
 async function detSavePaymentDetails() {
-  if (!activeEvent || activeEvent.extendedProps.isRecurring) return;
-  if (activeEvent.extendedProps.status === 'cancelled') return;
-  if (!activeEvent.extendedProps.isPaid) {
-    alert('קודם לחצי «לא שולם — לחצי לסימון» למטה, ואז אפשר לעדכן סכום ואמצעי שוב.');
+  const ep = getDetailExtendedProps();
+  if (!activeEvent || ep.isRecurring) return;
+  if (ep.status === 'cancelled') return;
+  if (!ep.isPaid) {
+    alert('קודם סמני «שולם» למטה, ואז אפשר לעדכן סכום ואמצעי.');
     return;
   }
-  const lessonId = Number(activeEvent.id);
+  const lessonId = getActiveLessonId();
   if (!Number.isFinite(lessonId)) return;
+  const lessonPrice = requireDetailLessonPriceOrAlert();
+  if (lessonPrice === null) return;
   const raw = (document.getElementById('detPaidAmount').value || '').trim();
   const v = raw === '' ? NaN : parseInt(raw, 10);
   if (!Number.isFinite(v) || v < 0) {
@@ -834,98 +1375,51 @@ async function detSavePaymentDetails() {
     return;
   }
   const pm = (document.getElementById('detPaymentMethod').value || 'cash').trim();
+  if (pm === 'other') {
+    const pn = detPaymentNoteForSubmit();
+    if (!pn) {
+      alert('נא לפרט את אמצעי התשלום בשדה «אחר».');
+      return;
+    }
+  }
   const fd = new FormData();
+  fd.append('price', String(lessonPrice));
   fd.append('paid_amount', String(v));
   fd.append('payment_method', pm);
+  fd.append('payment_note', pm === 'other' ? detPaymentNoteForSubmit() : '');
   const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
+  const data = await readLessonUpdateJson(res);
   if (res.ok) {
     if (typeof activeEvent.setExtendedProp === 'function') {
+      activeEvent.setExtendedProp('price', lessonPrice);
       activeEvent.setExtendedProp('paidAmount', v);
       activeEvent.setExtendedProp('paymentMethod', pm);
+      activeEvent.setExtendedProp('paymentNote', pm === 'other' ? detPaymentNoteForSubmit() : '');
     }
-    const hint = document.getElementById('detPaymentSaveHint');
-    if (hint) {
-      hint.classList.remove('d-none');
-      setTimeout(function () {
-        hint.classList.add('d-none');
-      }, 2200);
-    }
+    mergeLessonUpdateIntoDetailUi(data, { showBalanceHint: true });
+    showDetSavedBanner();
     calendar.refetchEvents();
   } else {
     alert('שגיאה בשמירת פרטי התשלום. נסי שוב.');
   }
 }
 
-async function detSaveNotes() {
-  if (!activeEvent || activeEvent.extendedProps.isRecurring) return;
-  if (activeEvent.extendedProps.status === 'cancelled') return;
-  const lessonId = Number(activeEvent.id);
-  if (!Number.isFinite(lessonId)) return;
-  const txt = document.getElementById('detLessonNotes');
-  const notes = txt ? txt.value : '';
-  const fd = new FormData();
-  fd.append('notes', notes);
-  const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
-  if (res.ok) {
-    if (typeof activeEvent.setExtendedProp === 'function') {
-      activeEvent.setExtendedProp('notes', notes);
-    }
-    const hint = document.getElementById('detNotesSaveHint');
-    if (hint) {
-      hint.classList.remove('d-none');
-      setTimeout(function () {
-        hint.classList.add('d-none');
-      }, 2200);
-    }
-    calendar.refetchEvents();
-  } else {
-    alert('שגיאה בשמירת ההערות. נסי שוב.');
-  }
-}
-
-async function detSavePrice() {
-  if (!activeEvent || activeEvent.extendedProps.isRecurring) return;
-  const lessonId = Number(activeEvent.id);
-  if (!Number.isFinite(lessonId)) return;
-  const raw = document.getElementById('detPriceInput').value;
-  const v = parseInt(raw, 10);
-  if (!Number.isFinite(v) || v < 0) {
-    alert('נא להזין מחיר תקין (מספר חיובי).');
-    return;
-  }
-  const fd = new FormData();
-  fd.append('price', String(v));
-  const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
-  if (res.ok) {
-    if (typeof activeEvent.setExtendedProp === 'function') {
-      activeEvent.setExtendedProp('price', v);
-    }
-    const hint = document.getElementById('detPriceSaveHint');
-    if (hint) {
-      hint.classList.remove('d-none');
-      setTimeout(function () {
-        hint.classList.add('d-none');
-      }, 2200);
-    }
-    calendar.refetchEvents();
-  } else {
-    alert('שגיאה בשמירת המחיר. נסי שוב.');
-  }
-}
-
 async function detSetAttendance(value) {
-  if (!activeEvent || activeEvent.extendedProps.isRecurring) return;
-  if (activeEvent.extendedProps.status === 'cancelled') return;
-  if (activeEvent.extendedProps.isPaid) return;
-  const lessonId = Number(activeEvent.id);
+  const ep = getDetailExtendedProps();
+  if (!activeEvent || ep.isRecurring) return;
+  if (ep.status === 'cancelled') return;
+  if (ep.isPaid) return;
+  const lessonId = getActiveLessonId();
   if (!Number.isFinite(lessonId)) return;
   const fd = new FormData();
   fd.append('attendance', value);
   const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
+  const data = await readLessonUpdateJson(res);
   if (res.ok) {
     if (typeof activeEvent.setExtendedProp === 'function') {
       activeEvent.setExtendedProp('attendance', value);
     }
+    mergeLessonUpdateIntoDetailUi(data, { showBalanceHint: false });
     _syncDetailAttendanceUI(value, false, false);
     calendar.refetchEvents();
   } else {
@@ -933,65 +1427,75 @@ async function detSetAttendance(value) {
   }
 }
 
-function _syncDetailPaidBtn(isPaid) {
-  const btn   = document.getElementById('detPaidBtn');
-  const label = document.getElementById('detPaidLabel');
-  const icon  = document.getElementById('detPaidIcon');
+function _syncDetailPaidDualButtons(isPaid) {
+  const paidBtn = document.getElementById('detMarkPaidBtn');
+  const unpaidBtn = document.getElementById('detMarkUnpaidBtn');
+  if (!paidBtn || !unpaidBtn) return;
   if (isPaid) {
-    btn.className = 'paid w-100 mt-2';
-    label.textContent = 'שולם ✓ — לחצי לביטול';
-    icon.className = 'bi bi-check-circle me-2';
+    paidBtn.className = 'btn btn-success flex-fill';
+    unpaidBtn.className = 'btn btn-outline-secondary flex-fill det-mark-unpaid-btn';
   } else {
-    btn.className = 'unpaid w-100 mt-2';
-    label.textContent = 'לא שולם — לחצי לסימון';
-    icon.className = 'bi bi-x-circle me-2';
+    paidBtn.className = 'btn btn-outline-success flex-fill';
+    unpaidBtn.className = 'btn btn-danger flex-fill det-mark-unpaid-btn';
   }
 }
 
-// Toggle paid straight from the detail card
-async function detTogglePaid() {
+async function detApplyPaidState(newPaid) {
   if (!activeEvent) return;
-  if (activeEvent.extendedProps.status === 'cancelled') return;
-  const nowPaid = activeEvent.extendedProps.isPaid === true;
-  const newPaid = !nowPaid;
+  const ep = getDetailExtendedProps();
+  if (ep.status === 'cancelled') return;
+  const lessonId = getActiveLessonId();
+  if (!Number.isFinite(lessonId)) return;
+  const lessonPrice = requireDetailLessonPriceOrAlert();
+  if (lessonPrice === null) return;
+  const pm = (document.getElementById('detPaymentMethod').value || 'cash').trim();
+  if (newPaid && pm === 'other') {
+    const pn = detPaymentNoteForSubmit();
+    if (!pn) {
+      alert('נא לפרט את אמצעי התשלום בשדה «אחר».');
+      return;
+    }
+  }
 
   const fd = new FormData();
+  fd.append('price', String(lessonPrice));
   fd.append('is_paid', newPaid ? 'true' : 'false');
+  fd.append('payment_finalized', 'true');
   if (newPaid) {
     fd.append('status', 'completed');
     fd.append('attendance', 'arrived');
     const pa = (document.getElementById('detPaidAmount').value || '').trim();
-    const pr = Number(activeEvent.extendedProps.price);
-    fd.append('paid_amount', pa || (Number.isFinite(pr) ? String(pr) : '0'));
-    fd.append('payment_method', (document.getElementById('detPaymentMethod').value || 'cash').trim() || 'cash');
+    fd.append('paid_amount', pa || String(lessonPrice));
+    fd.append('payment_method', pm || 'cash');
+    fd.append('payment_note', pm === 'other' ? detPaymentNoteForSubmit() : '');
   } else {
     fd.append('paid_amount', '');
     fd.append('payment_method', '');
+    fd.append('payment_note', '');
   }
 
-  const res = await fetch(`/api/lessons/${activeEvent.id}/update`, { method: 'POST', body: fd });
+  const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
+  const data = await readLessonUpdateJson(res);
   if (res.ok) {
-    _syncDetailPaidBtn(newPaid);
+    _syncDetailPaidDualButtons(newPaid);
     const paySaveBtn = document.getElementById('detSavePaymentDetailsBtn');
     if (paySaveBtn) paySaveBtn.classList.toggle('d-none', !newPaid);
     const payHintLabel = document.getElementById('detPayHint');
-    if (payHintLabel && activeEvent.extendedProps.status !== 'cancelled') {
+    if (payHintLabel && ep.status !== 'cancelled') {
       payHintLabel.textContent = newPaid
-        ? 'שולם ✓ — אפשר לעדכן סכום/אמצעי וללחוץ «עדכן סכום ואמצעי»'
-        : 'בחרי ביט / מזומן / פייבוקס, התאימי סכום, ואז לחצי «שולם» למטה';
+        ? 'שולם ✓ — אפשר לעדכן סכום/אמצעי וללחוץ «עדכן סכום ואמצעי» או «שמור פרטים».'
+        : 'בחרי אמצעי וסכום, ואז לחצי «שולם» או «לא שולם».';
     }
     if (newPaid) {
       if (typeof activeEvent.setExtendedProp === 'function') {
         activeEvent.setExtendedProp('attendance', 'arrived');
         const pam = (document.getElementById('detPaidAmount').value || '').trim();
-        const prx = Number(activeEvent.extendedProps.price);
-        const finalAmt = pam ? parseInt(pam, 10) : Number.isFinite(prx) ? prx : 0;
+        const finalAmt = pam ? parseInt(pam, 10) : lessonPrice;
         activeEvent.setExtendedProp('isPaid', true);
+        activeEvent.setExtendedProp('price', lessonPrice);
         activeEvent.setExtendedProp('paidAmount', finalAmt);
-        activeEvent.setExtendedProp(
-          'paymentMethod',
-          (document.getElementById('detPaymentMethod').value || 'cash').trim()
-        );
+        activeEvent.setExtendedProp('paymentMethod', pm || 'cash');
+        activeEvent.setExtendedProp('paymentNote', pm === 'other' ? detPaymentNoteForSubmit() : '');
       }
       _syncDetailAttendanceUI('arrived', false, true);
     } else {
@@ -999,9 +1503,78 @@ async function detTogglePaid() {
         activeEvent.setExtendedProp('isPaid', false);
         activeEvent.setExtendedProp('paidAmount', null);
         activeEvent.setExtendedProp('paymentMethod', '');
+        activeEvent.setExtendedProp('paymentNote', '');
       }
-      _syncDetailAttendanceUI(activeEvent.extendedProps.attendance || 'expected', false, false);
+      _syncDetailAttendanceUI(ep.attendance || 'expected', false, false);
     }
+    mergeLessonUpdateIntoDetailUi(data, { showBalanceHint: true });
+    calendar.refetchEvents();
+  } else {
+    alert('שגיאה בשמירה. נסי שוב.');
+  }
+}
+
+async function detSaveAllDetails() {
+  const ep = getDetailExtendedProps();
+  if (!activeEvent || ep.isRecurring) return;
+  if (ep.status === 'cancelled') return;
+  const lessonId = getActiveLessonId();
+  if (!Number.isFinite(lessonId)) return;
+  const lessonPrice = requireDetailLessonPriceOrAlert();
+  if (lessonPrice === null) return;
+
+  const notesEl = document.getElementById('detLessonNotes');
+  const notes = notesEl ? notesEl.value : '';
+  const isPaid = ep.isPaid === true;
+  const pm = (document.getElementById('detPaymentMethod').value || 'cash').trim();
+
+  if (pm === 'other') {
+    const pn = detPaymentNoteForSubmit();
+    if (!pn) {
+      alert('נא לפרט את אמצעי התשלום בשדה «אחר».');
+      return;
+    }
+  }
+
+  const fd = new FormData();
+  fd.append('notes', notes);
+  fd.append('price', String(lessonPrice));
+  fd.append('payment_method', pm);
+  fd.append('payment_note', pm === 'other' ? detPaymentNoteForSubmit() : '');
+  const detGroupCb = document.getElementById('detIsGroupLesson');
+  if (detGroupCb && !detGroupCb.disabled) {
+    fd.append('is_group_lesson', detGroupCb.checked ? 'true' : 'false');
+  }
+
+  if (isPaid) {
+    const raw = (document.getElementById('detPaidAmount').value || '').trim();
+    const v = raw === '' ? NaN : parseInt(raw, 10);
+    if (!Number.isFinite(v) || v < 0) {
+      alert('נא להזין סכום תקין.');
+      return;
+    }
+    fd.append('paid_amount', String(v));
+  }
+
+  const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
+  const data = await readLessonUpdateJson(res);
+  if (res.ok) {
+    if (typeof activeEvent.setExtendedProp === 'function') {
+      activeEvent.setExtendedProp('notes', notes);
+      activeEvent.setExtendedProp('price', lessonPrice);
+      activeEvent.setExtendedProp('paymentMethod', pm);
+      activeEvent.setExtendedProp('paymentNote', pm === 'other' ? detPaymentNoteForSubmit() : '');
+      if (detGroupCb && !detGroupCb.disabled) {
+        activeEvent.setExtendedProp('isGroupLesson', detGroupCb.checked);
+      }
+      if (isPaid) {
+        const rawAmt = (document.getElementById('detPaidAmount').value || '').trim();
+        const v = parseInt(rawAmt, 10);
+        activeEvent.setExtendedProp('paidAmount', v);
+      }
+    }
+    mergeLessonUpdateIntoDetailUi(data, { showBalanceHint: false });
+    showDetSavedBanner();
     calendar.refetchEvents();
   } else {
     alert('שגיאה בשמירה. נסי שוב.');
@@ -1011,17 +1584,18 @@ async function detTogglePaid() {
 // Delete real lesson from detail card (not virtual recurring)
 async function detDeleteLesson() {
   if (!activeEvent) return;
-  const raw = activeEvent.id;
-  if (raw == null || String(raw).startsWith('v-')) {
-    alert('לא ניתן למחוק שיעור קבוע — השתמשי ב"הסר מופע זה מהלוח".');
-    return;
-  }
-  const lessonId = Number(raw);
+  const lessonId = getActiveLessonId();
   if (!Number.isFinite(lessonId)) {
     alert('מזהה שיעור לא תקין.');
     return;
   }
-  if (!confirm('למחוק את השיעור מהמערכת? הפעולה סופית.')) return;
+  if (
+    !confirm(
+      'להסיר את המופע הזה מהלוח?\n\nאם זה מתוך שיעור חוזר — רק התאריך הזה ייעלם והחזרות ימשיכו.\nשיעור חד־פעמי יימחק לגמרי.'
+    )
+  ) {
+    return;
+  }
   const res = await fetch(`/api/lessons/${lessonId}/delete`, { method: 'POST' });
   if (res.ok) {
     detailModal.hide();
@@ -1031,95 +1605,15 @@ async function detDeleteLesson() {
   }
 }
 
-// Remove one virtual recurring occurrence from the calendar (placeholder lesson)
-async function removeRecurringFromCalendar() {
-  if (!activeEvent || activeEvent.extendedProps.isRecurring !== true) return;
-  if (!confirm('להסיר את המופע הזה מהלוח? השיעור הקבוע של התלמיד לא ישתנה.')) return;
-  const fd = new FormData();
-  let endVal = (document.getElementById('detRecurEnd').value || '').trim();
-  if (!endVal) endVal = toInputTime(getEventEnd(activeEvent));
-  fd.append('student_id', activeEvent.extendedProps.studentId);
-  fd.append('slot_date', toInputDate(activeEvent.start));
-  fd.append('start_time', toInputTime(activeEvent.start));
-  fd.append('end_time', endVal);
-  const res = await fetch('/api/lessons/skip-recurring-slot', { method: 'POST', body: fd });
-  if (res.ok) {
-    detailModal.hide();
-    calendar.refetchEvents();
-  } else {
-    alert('שגיאה. אולי כבר קיים שיעור בתאריך הזה — נסי לערוך או למחוק אותו.');
-  }
-}
-
-// Confirm a recurring slot from detail card
-async function confirmRecurring() {
-  if (!activeEvent) return;
-  const p  = activeEvent.extendedProps;
-  const fd = new FormData();
-  fd.append('student_id',    p.studentId);
-  fd.append('original_date', toInputDate(activeEvent.start));
-  fd.append('original_start', toInputTime(activeEvent.start));
-  fd.append('original_end',   toInputTime(getEventEnd(activeEvent)));
-  let newEnd = (document.getElementById('detRecurEnd').value || '').trim();
-  if (!newEnd) {
-    const s = document.getElementById('detRecurStart').value;
-    if (s) {
-      const [h, m] = s.split(':').map(Number);
-      const d = new Date(2000, 0, 1, h, m);
-      d.setMinutes(d.getMinutes() + 60);
-      newEnd = `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-    } else {
-      newEnd = toInputTime(getEventEnd(activeEvent));
-    }
-  }
-  fd.append('new_date',  document.getElementById('detRecurDate').value);
-  fd.append('new_start', document.getElementById('detRecurStart').value);
-  fd.append('new_end',   newEnd);
-  const recurPriceEl = document.getElementById('detRecurPrice');
-  let priceVal = recurPriceEl && recurPriceEl.value !== '' ? parseInt(recurPriceEl.value, 10) : NaN;
-  if (!Number.isFinite(priceVal) || priceVal < 0) priceVal = p.price || 0;
-  fd.append('price', String(priceVal));
-  const recurNotes = document.getElementById('detRecurNotes');
-  fd.append('notes', recurNotes ? recurNotes.value || '' : '');
-
-  const res = await fetch('/api/lessons/confirm-recurring', { method: 'POST', body: fd });
-  if (res.ok) {
-    detailModal.hide();
-    calendar.refetchEvents();
-  } else {
-    alert('שגיאה בשמירה. נסי שוב.');
-  }
-}
-
 // Open the full edit modal from detail card
 function switchToEdit() {
   detailModal.hide();
-  if (activeEvent) openFullEditModal(activeEvent);
+  if (activeEvent) openFullEditModal(activeEvent, stashScheduleContext);
 }
 
 // ════════════════════════════════════════════════════════════════════════════
 //  FULL EDIT MODAL
 // ════════════════════════════════════════════════════════════════════════════
-
-function tomorrowInputDate() {
-  const d = new Date();
-  d.setDate(d.getDate() + 1);
-  return toInputDate(d);
-}
-
-function openQuickLessonTomorrow() {
-  openNewLessonModal();
-  document.getElementById('lessonDate').value = tomorrowInputDate();
-  document.getElementById('lessonStart').value = '10:00';
-  document.getElementById('lessonEnd').value = '11:00';
-}
-
-function openQuickLessonToday() {
-  openNewLessonModal();
-  document.getElementById('lessonDate').value = toInputDate(new Date());
-  document.getElementById('lessonStart').value = '10:00';
-  document.getElementById('lessonEnd').value = '11:00';
-}
 
 function openNewLessonModal() {
   hideCalHoverPreview();
@@ -1130,142 +1624,375 @@ function openNewLessonModal() {
   document.getElementById('recurringOrigStart').value  = '';
   document.getElementById('recurringOrigEnd').value    = '';
   document.getElementById('lessonForm').reset();
+  setLessonStudentComboboxValue(null);
   document.getElementById('lessonDate').value   = toInputDate(new Date());
   document.getElementById('lessonStatus').value = 'scheduled';
   document.getElementById('btnDeleteLesson').classList.add('d-none');
-  document.getElementById('editAttendanceBlock').classList.remove('d-none');
-  const epb = document.getElementById('editPaidDetailsBlock');
-  if (epb) epb.classList.remove('d-none');
-  setPaid(false);
-  setEditAttendance('expected');
+  const extras = document.getElementById('lessonFormExtras');
+  if (extras) extras.classList.add('d-none');
+  const linkedSchedEl = document.getElementById('lessonLinkedScheduleId');
+  if (linkedSchedEl) linkedSchedEl.value = '';
+  const coreHint = document.getElementById('lessonFormCoreHint');
+  if (coreHint) coreHint.classList.remove('d-none');
+  const typeRow = document.getElementById('lessonTypeRow');
+  if (typeRow) typeRow.classList.remove('d-none');
+  const editRecurHint = document.getElementById('lessonEditRecurHint');
+  if (editRecurHint) editRecurHint.classList.add('d-none');
+  const onceR = document.getElementById('lessonTypeOnce');
+  if (onceR) onceR.checked = true;
+  const recurHint = document.getElementById('lessonRecurHint');
+  if (recurHint) recurHint.classList.add('d-none');
+  const customWrap = document.getElementById('lessonCustomRecurWrap');
+  if (customWrap) customWrap.classList.add('d-none');
+  const freqEl = document.getElementById('lessonCustomFreq');
+  if (freqEl) freqEl.value = 'biweekly';
+  syncLessonCustomFreqFields();
+  syncLessonCreateTypeHints();
+  setEditModalSize(true);
+  bindLessonFormTimeControls();
+  const ls = document.getElementById('lessonStart');
+  if (ls && !ls.value) ls.value = '09:00';
+  bumpLessonEndFromStart();
   editModal.show();
 }
 
 function openNewLessonModalOnDate(dateStr) {
   openNewLessonModal();
   document.getElementById('lessonDate').value = dateStr.slice(0, 10);
-  // Pre-fill time if a time was clicked (dateStr includes time in timeGrid)
-  if (dateStr.length > 10) {
-    document.getElementById('lessonStart').value = dateStr.slice(11, 16);
+  const ls = document.getElementById('lessonStart');
+  if (ls && dateStr.length > 10) {
+    const t = dateStr.slice(11, 16);
+    if (t && t.length >= 5) ls.value = t;
   }
+  if (ls && !ls.value) ls.value = '09:00';
+  bumpLessonEndFromStart();
 }
 
-function openFullEditModal(event) {
+function openFullEditModal(event, scheduleCtx) {
+  scheduleCtx = scheduleCtx || null;
   hideCalHoverPreview();
   activeEvent = event;
-  const p         = event.extendedProps;
-  const isRecurring = p.isRecurring === true;
+  const p = event.extendedProps || {};
+  const idStr = String(event.id || '');
+  const isVirtualRecurring = p.isRecurring === true && idStr.startsWith('v-');
+  let schedId = '';
+  if (isVirtualRecurring && p.scheduleId != null) schedId = String(p.scheduleId);
+  else if (scheduleCtx && scheduleCtx.scheduleId != null) schedId = String(scheduleCtx.scheduleId);
 
-  if (isRecurring) {
-    document.getElementById('editModalTitle').textContent = 'אישור שיעור קבוע';
-    document.getElementById('lessonId').value            = '';
-    document.getElementById('recurringOrigDate').value   = toInputDate(event.start);
-    document.getElementById('recurringOrigStart').value  = toInputTime(event.start);
-    document.getElementById('recurringOrigEnd').value    = toInputTime(getEventEnd(event));
+  const hasRecurringEdit = schedId !== '';
+
+  const extras = document.getElementById('lessonFormExtras');
+  if (extras) extras.classList.add('d-none');
+  const coreHint = document.getElementById('lessonFormCoreHint');
+  if (coreHint) coreHint.classList.add('d-none');
+  const typeRow = document.getElementById('lessonTypeRow');
+  if (typeRow) typeRow.classList.remove('d-none');
+
+  const linkedEl = document.getElementById('lessonLinkedScheduleId');
+  if (linkedEl) linkedEl.value = schedId;
+
+  setEditModalSize(true);
+  bindLessonFormTimeControls();
+
+  if (isVirtualRecurring) {
+    document.getElementById('editModalTitle').textContent = 'עריכת שיעור קבוע';
+    document.getElementById('lessonId').value = '';
+    document.getElementById('recurringOrigDate').value = toInputDate(event.start);
+    document.getElementById('recurringOrigStart').value = toInputTime(event.start);
+    document.getElementById('recurringOrigEnd').value = toInputTime(getEventEnd(event));
     document.getElementById('btnDeleteLesson').classList.add('d-none');
-    document.getElementById('editAttendanceBlock').classList.add('d-none');
+    const pr = p.price != null && p.price !== '' ? p.price : 0;
+    document.getElementById('lessonPrice').value = String(pr);
+  } else if (hasRecurringEdit) {
+    document.getElementById('editModalTitle').textContent = 'עריכת שיעור קבוע';
+    document.getElementById('lessonId').value = event.id;
+    document.getElementById('recurringOrigDate').value = '';
+    document.getElementById('recurringOrigStart').value = '';
+    document.getElementById('recurringOrigEnd').value = '';
+    document.getElementById('btnDeleteLesson').classList.add('d-none');
+    const pr = p.price != null && p.price !== '' ? p.price : 0;
+    document.getElementById('lessonPrice').value = String(pr);
   } else {
     document.getElementById('editModalTitle').textContent = 'עריכת שיעור';
-    document.getElementById('lessonId').value            = event.id;
-    document.getElementById('recurringOrigDate').value   = '';
+    document.getElementById('lessonId').value = event.id;
+    document.getElementById('recurringOrigDate').value = '';
+    document.getElementById('recurringOrigStart').value = '';
+    document.getElementById('recurringOrigEnd').value = '';
+    if (linkedEl) linkedEl.value = '';
     document.getElementById('btnDeleteLesson').classList.remove('d-none');
-    const paidLesson = p.isPaid === true;
-    document.getElementById('editAttendanceBlock').classList.toggle('d-none', paidLesson);
-    setEditAttendance(paidLesson ? 'arrived' : (p.attendance || 'expected'));
   }
 
-  document.getElementById('lessonDate').value   = toInputDate(event.start);
-  document.getElementById('lessonStart').value  = toInputTime(event.start);
-  document.getElementById('lessonEnd').value    = toInputTime(getEventEnd(event));
-  document.getElementById('lessonStatus').value = p.status || 'scheduled';
-  document.getElementById('lessonPrice').value  = p.price  || 0;
-  document.getElementById('lessonNotes').value  = p.notes  || '';
-  setPaid(p.isPaid === true);
+  document.getElementById('lessonDate').value = toInputDate(event.start);
+  document.getElementById('lessonStart').value = toInputTime(event.start);
+  document.getElementById('lessonEnd').value = toInputTime(getEventEnd(event));
+  document.getElementById('lessonNotes').value = p.notes || '';
 
-  const editablePaid = document.getElementById('editPaidDetailsBlock');
-  if (editablePaid) editablePaid.classList.toggle('d-none', isRecurring);
-  const lpaidAmt = document.getElementById('lessonPaidAmount');
-  const lpaidMeth = document.getElementById('lessonPaymentMethod');
-  if (lpaidAmt && !isRecurring) {
-    const st = p.paidAmount;
-    lpaidAmt.value = st != null && st !== '' ? String(st) : '';
-  }
-  if (lpaidMeth && !isRecurring) {
-    const m = String(p.paymentMethod || 'cash').toLowerCase();
-    lpaidMeth.value = ['cash', 'bit', 'paybox', 'other'].includes(m) ? m : 'cash';
+  setLessonStudentComboboxValue(p.studentId);
+
+  if (hasRecurringEdit) {
+    const freqFromCtx =
+      scheduleCtx && scheduleCtx.scheduleFrequency
+        ? String(scheduleCtx.scheduleFrequency).toLowerCase()
+        : String(p.scheduleFrequency || 'weekly').toLowerCase();
+    const freqSrc = isVirtualRecurring ? String(p.scheduleFrequency || 'weekly').toLowerCase() : freqFromCtx;
+    const recurEl = document.getElementById('lessonTypeRecur');
+    const customEl = document.getElementById('lessonTypeCustom');
+    if (freqSrc === 'weekly') {
+      if (recurEl) recurEl.checked = true;
+    } else {
+      if (customEl) customEl.checked = true;
+      const freqEl = document.getElementById('lessonCustomFreq');
+      if (freqEl) freqEl.value = freqSrc === 'monthly' ? 'monthly' : 'biweekly';
+      syncLessonCustomFreqFields();
+      if (freqSrc === 'monthly') {
+        const dom =
+          (scheduleCtx && scheduleCtx.scheduleDayOfMonth != null && scheduleCtx.scheduleDayOfMonth !== '')
+            ? scheduleCtx.scheduleDayOfMonth
+            : p.scheduleDayOfMonth;
+        const md = document.getElementById('lessonMonthlyDay');
+        if (md) {
+          if (dom != null && dom !== '') md.value = String(dom);
+          else if (event.start) md.value = String(Math.min(31, Math.max(1, event.start.getDate())));
+        }
+      }
+    }
+    syncLessonCreateTypeHints();
+  } else {
+    const onceEl = document.getElementById('lessonTypeOnce');
+    if (onceEl) onceEl.checked = true;
+    syncLessonCreateTypeHints();
   }
 
-  const studentId = String(p.studentId);
-  for (const opt of document.getElementById('lessonStudent').options) {
-    opt.selected = (opt.value === studentId);
-  }
+  const editRecurHintEl = document.getElementById('lessonEditRecurHint');
+  if (editRecurHintEl) editRecurHintEl.classList.remove('d-none');
 
   editModal.show();
 }
 
 async function saveLesson() {
   const studentId = document.getElementById('lessonStudent').value;
-  if (!studentId) { alert('יש לבחור תלמיד'); return; }
+  if (!studentId) {
+    alert('יש לבחור תלמיד');
+    return;
+  }
 
-  const lessonId   = document.getElementById('lessonId').value;
-  const origDate   = document.getElementById('recurringOrigDate').value;
-  const origStart  = document.getElementById('recurringOrigStart').value;
-  const origEnd    = document.getElementById('recurringOrigEnd').value;
-  const newDate    = document.getElementById('lessonDate').value;
-  const newStart   = document.getElementById('lessonStart').value;
-  const newEnd     = document.getElementById('lessonEnd').value;
+  const lessonIdRaw = document.getElementById('lessonId').value;
+  const origDate = document.getElementById('recurringOrigDate').value;
+  const origStart = document.getElementById('recurringOrigStart').value;
+  const origEnd = document.getElementById('recurringOrigEnd').value;
+  const newDate = document.getElementById('lessonDate').value;
+  const newStart = document.getElementById('lessonStart').value;
+  const newEnd = document.getElementById('lessonEnd').value;
+  const notesVal = document.getElementById('lessonNotes').value;
+  const linkedSched = (document.getElementById('lessonLinkedScheduleId').value || '').trim();
+
+  const onceR = document.getElementById('lessonTypeOnce');
+  const recurR = document.getElementById('lessonTypeRecur');
+  const customR = document.getElementById('lessonTypeCustom');
+  const pickOnce = onceR && onceR.checked;
+  const pickRecur = recurR && recurR.checked;
+  const pickCustom = customR && customR.checked;
+
+  function buildScheduleUpdateForm() {
+    const fd = new FormData();
+    fd.append('student_id', studentId);
+    fd.append('day_of_week', String(dateStringToAppDayOfWeek(newDate)));
+    fd.append('start_time', newStart);
+    fd.append('end_time', newEnd);
+    if (pickCustom) {
+      const freqEl = document.getElementById('lessonCustomFreq');
+      const freq = freqEl && freqEl.value ? freqEl.value : 'biweekly';
+      fd.append('frequency', freq);
+      if (freq === 'biweekly') {
+        fd.append('anchor_date', newDate);
+      } else if (freq === 'monthly') {
+        const mdEl = document.getElementById('lessonMonthlyDay');
+        const dom = mdEl ? parseInt(String(mdEl.value).trim(), 10) : NaN;
+        if (!Number.isFinite(dom) || dom < 1 || dom > 31) {
+          alert('נא לבחור יום בחודש בין 1 ל-31.');
+          return null;
+        }
+        fd.append('day_of_month', String(dom));
+      }
+    } else {
+      fd.append('frequency', 'weekly');
+    }
+    return fd;
+  }
+
+  async function postLessonCoreUpdate(lid) {
+    const fd = new FormData();
+    fd.append('student_id', studentId);
+    fd.append('lesson_date', newDate);
+    fd.append('start_time', newStart);
+    fd.append('end_time', newEnd);
+    fd.append('notes', notesVal);
+    return fetch(`/api/lessons/${lid}/update`, { method: 'POST', body: fd });
+  }
+
+  if (linkedSched) {
+    if (!pickOnce && !pickRecur && !pickCustom) {
+      alert('נא לבחור סוג חזרה: חד־פעמי, קבוע (שבועי) או מותאם (דו־שבועי / חודשי).');
+      return;
+    }
+
+    if (!lessonIdRaw && origDate) {
+      if (pickOnce) {
+        const fd = new FormData();
+        fd.append('student_id', studentId);
+        fd.append('original_date', origDate);
+        fd.append('original_start', origStart);
+        fd.append('original_end', origEnd);
+        fd.append('new_date', newDate);
+        fd.append('new_start', newStart);
+        fd.append('new_end', newEnd);
+        fd.append('price', document.getElementById('lessonPrice').value);
+        fd.append('notes', notesVal);
+        let res = await fetch('/api/lessons/confirm-recurring', { method: 'POST', body: fd });
+        if (!res.ok) {
+          alert('שגיאה בשמירה. נסי שוב.');
+          return;
+        }
+        res = await fetch(`/api/lessons/recurring-schedule/${linkedSched}/delete`, { method: 'POST' });
+        if (!res.ok) {
+          alert('השיעור נוצר אך לא ניתן היה להסיר את החזרות. נסי מחיקת לוח קבוע בפרופיל התלמיד.');
+          return;
+        }
+      } else {
+        const fd = buildScheduleUpdateForm();
+        if (!fd) return;
+        const res = await fetch(`/api/lessons/recurring-schedule/${linkedSched}/update`, { method: 'POST', body: fd });
+        if (!res.ok) {
+          alert('שגיאה בעדכון לוח קבוע. נסי שוב.');
+          return;
+        }
+      }
+      editModal.hide();
+      calendar.refetchEvents();
+      stashScheduleContext = null;
+      return;
+    }
+
+    if (lessonIdRaw) {
+      if (pickOnce) {
+        let res = await postLessonCoreUpdate(lessonIdRaw);
+        if (!res.ok) {
+          alert('שגיאה בשמירת השיעור. נסי שוב.');
+          return;
+        }
+        res = await fetch(`/api/lessons/recurring-schedule/${linkedSched}/delete`, { method: 'POST' });
+        if (!res.ok) {
+          alert('השיעור עודכן אך לא ניתן היה להסיר את החזרות מהלוח. נסי שוב או ערכי בפרופיל התלמיד.');
+          return;
+        }
+      } else {
+        const fd = buildScheduleUpdateForm();
+        if (!fd) return;
+        let res = await fetch(`/api/lessons/recurring-schedule/${linkedSched}/update`, { method: 'POST', body: fd });
+        if (!res.ok) {
+          alert('שגיאה בעדכון לוח קבוע. נסי שוב.');
+          return;
+        }
+        res = await postLessonCoreUpdate(lessonIdRaw);
+        if (!res.ok) {
+          alert('שגיאה בעדכון השיעור. נסי שוב.');
+          return;
+        }
+      }
+      editModal.hide();
+      calendar.refetchEvents();
+      stashScheduleContext = null;
+      return;
+    }
+  }
 
   let url;
   const fd = new FormData();
 
-  if (!lessonId && origDate) {
-    // Confirm a recurring slot via full modal
+  if (!lessonIdRaw && origDate) {
     url = '/api/lessons/confirm-recurring';
-    fd.append('student_id',    studentId);
+    fd.append('student_id', studentId);
     fd.append('original_date', origDate);
     fd.append('original_start', origStart);
-    fd.append('original_end',   origEnd);
-    fd.append('new_date',  newDate);
+    fd.append('original_end', origEnd);
+    fd.append('new_date', newDate);
     fd.append('new_start', newStart);
-    fd.append('new_end',   newEnd);
+    fd.append('new_end', newEnd);
     fd.append('price', document.getElementById('lessonPrice').value);
-    fd.append('notes', document.getElementById('lessonNotes').value);
-  } else if (lessonId) {
-    // Update an existing lesson
-    url = `/api/lessons/${lessonId}/update`;
-    fd.append('student_id',  studentId);
-    fd.append('lesson_date', newDate);
-    fd.append('start_time',  newStart);
-    fd.append('end_time',    newEnd);
-    fd.append('status',  document.getElementById('lessonStatus').value);
-    const paidEl = document.getElementById('lessonPaid');
-    const paidNow = paidEl && paidEl.value === 'true';
-    fd.append('is_paid', paidEl.value);
-    fd.append('attendance', document.getElementById('lessonAttendance').value);
-    fd.append('price',   document.getElementById('lessonPrice').value);
-    fd.append('notes',   document.getElementById('lessonNotes').value);
-    if (paidNow) {
-      fd.append('paid_amount', (document.getElementById('lessonPaidAmount').value || '').trim());
-      fd.append('payment_method', (document.getElementById('lessonPaymentMethod').value || 'cash').trim());
+    fd.append('notes', notesVal);
+  } else if (lessonIdRaw) {
+    if (pickRecur || pickCustom) {
+      const addFd = buildRecurringScheduleAddFormData(studentId, newDate, newStart, newEnd, pickCustom);
+      if (!addFd) {
+        alert('נא לבחור יום בחודש בין 1 ל-31.');
+        return;
+      }
+      let res = await fetch('/api/lessons/recurring-schedule/add', { method: 'POST', body: addFd });
+      if (!res.ok) {
+        alert('שגיאה ביצירת לוח חוזר. ייתכן שכבר קיימת חזרה דומה — בדקי בפרופיל התלמיד.');
+        return;
+      }
+      res = await postLessonCoreUpdate(lessonIdRaw);
+      if (!res.ok) {
+        alert('שגיאה בעדכון השיעור. נסי שוב.');
+        return;
+      }
     } else {
-      fd.append('paid_amount', '');
-      fd.append('payment_method', '');
+      const res = await postLessonCoreUpdate(lessonIdRaw);
+      if (!res.ok) {
+        alert('שגיאה בשמירה. נסי שוב.');
+        return;
+      }
     }
+    editModal.hide();
+    calendar.refetchEvents();
+    stashScheduleContext = null;
+    return;
   } else {
-    // Create new lesson
-    url = '/api/lessons/create';
-    fd.append('student_id',  studentId);
-    fd.append('lesson_date', newDate);
-    fd.append('start_time',  newStart);
-    fd.append('end_time',    newEnd);
-    fd.append('price', document.getElementById('lessonPrice').value);
-    fd.append('notes', document.getElementById('lessonNotes').value);
-    fd.append('attendance', document.getElementById('lessonAttendance').value);
-    const paidElN = document.getElementById('lessonPaid');
-    if (paidElN && paidElN.value === 'true') {
-      fd.append('is_paid', 'true');
-      fd.append('paid_amount', (document.getElementById('lessonPaidAmount').value || '').trim());
-      fd.append('payment_method', (document.getElementById('lessonPaymentMethod').value || 'cash').trim());
+    const recurRadio = document.getElementById('lessonTypeRecur');
+    const customRadio = document.getElementById('lessonTypeCustom');
+    const isRecurringNew = recurRadio && recurRadio.checked;
+    const isCustomRecur = customRadio && customRadio.checked;
+    if (isRecurringNew || isCustomRecur) {
+      url = '/api/lessons/recurring-schedule/add';
+      fd.append('student_id', studentId);
+      fd.append('day_of_week', String(dateStringToAppDayOfWeek(newDate)));
+      fd.append('start_time', newStart);
+      fd.append('end_time', newEnd);
+      if (isCustomRecur) {
+        const freqEl = document.getElementById('lessonCustomFreq');
+        const freq = freqEl && freqEl.value ? freqEl.value : 'biweekly';
+        fd.append('frequency', freq);
+        if (freq === 'biweekly') {
+          fd.append('anchor_date', newDate);
+        } else if (freq === 'monthly') {
+          const mdEl = document.getElementById('lessonMonthlyDay');
+          const dom = mdEl ? parseInt(String(mdEl.value).trim(), 10) : NaN;
+          if (!Number.isFinite(dom) || dom < 1 || dom > 31) {
+            alert('נא לבחור יום בחודש בין 1 ל-31.');
+            return;
+          }
+          fd.append('day_of_month', String(dom));
+        }
+      } else {
+        fd.append('frequency', 'weekly');
+      }
+    } else {
+      url = '/api/lessons/create';
+      let defaultPrice = 0;
+      const rec = studentsList.find(function (s) {
+        return String(s.id) === String(studentId);
+      });
+      if (rec && rec.default_price != null && rec.default_price !== '') {
+        const pr = parseInt(String(rec.default_price), 10);
+        if (Number.isFinite(pr) && pr >= 0) defaultPrice = pr;
+      }
+      fd.append('student_id', studentId);
+      fd.append('lesson_date', newDate);
+      fd.append('start_time', newStart);
+      fd.append('end_time', newEnd);
+      fd.append('price', String(defaultPrice));
+      fd.append('notes', notesVal);
     }
   }
 
@@ -1273,6 +2000,7 @@ async function saveLesson() {
   if (res.ok) {
     editModal.hide();
     calendar.refetchEvents();
+    stashScheduleContext = null;
   } else {
     alert('שגיאה בשמירה. נסי שוב.');
   }
@@ -1307,7 +2035,13 @@ function setPaid(paid) {
 async function deleteLesson() {
   const lessonId = document.getElementById('lessonId').value;
   if (!lessonId) return;
-  if (!confirm('למחוק את השיעור מהמערכת? הפעולה סופית.')) return;
+  if (
+    !confirm(
+      'להסיר את המופע מהלוח?\n\nשיעור חוזר — רק התאריך הזה; שיעור חד־פעמי — מחיקה מלאה.'
+    )
+  ) {
+    return;
+  }
   const res = await fetch(`/api/lessons/${lessonId}/delete`, { method: 'POST' });
   if (res.ok) {
     editModal.hide();

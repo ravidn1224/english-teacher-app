@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{% if action == "new" %}תלמיד חדש{% else %}עריכת תלמיד{% endif %}{% endblock %}
+{% block title %}{% if action == "new" %}{% if prefill_parent_phone or prefill_parent_name %}הוסף ילד למשפחה{% else %}תלמיד חדש{% endif %}{% else %}עריכת תלמיד{% endif %}{% endblock %}
 
 {% block content %}
 <div class="row justify-content-center">
@@ -7,7 +7,9 @@
     <div class="card shadow-sm">
       <div class="card-header bg-primary text-white fs-4">
         <i class="bi bi-person-fill me-2"></i>
-        {% if action == "new" %}הוספת תלמיד חדש{% else %}עריכת פרטי תלמיד{% endif %}
+        {% if action == "new" %}
+          {% if prefill_parent_phone or prefill_parent_name %}הוסף ילד למשפחה{% else %}הוספת תלמיד חדש{% endif %}
+        {% else %}עריכת פרטי תלמיד{% endif %}
       </div>
       <div class="card-body p-4">
         {% if action == "new" and (prefill_parent_phone or prefill_parent_name) %}
@@ -25,7 +27,7 @@
             <div class="col-md-6">
               <label class="form-label fs-5">שם משפחה *</label>
               <input type="text" class="form-control form-control-lg" name="last_name"
-                     value="{{ student.last_name if student else '' }}" required />
+                     value="{{ student.last_name if student else (prefill_last_name or '') }}" required />
             </div>
           </div>
 

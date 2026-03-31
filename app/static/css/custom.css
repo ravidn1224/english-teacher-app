@@ -375,9 +375,55 @@ body:has(#calendar) .app-main {
   border: 1px solid var(--border-soft);
 }
 
-.student-quick-tomorrow {
+/* דף תלמיד — שתי עמודות ב־RTL: ימין פרטים+חוזרים, שמאל היסטוריה */
+.student-detail-page {
+  max-width: 72rem;
+  margin-inline: auto;
+  padding-bottom: 2rem;
+}
+.student-detail-page .student-detail-toolbar {
+  min-height: 2.5rem;
+}
+.student-detail-page .student-detail-card-header--green {
+  background: var(--gradient-cta) !important;
+  color: #fff !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+.student-detail-page .student-detail-card-header--gray {
+  background: linear-gradient(180deg, #6b7280 0%, #4b5563 100%) !important;
+  color: #fff !important;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.1);
+}
+.student-detail-page .student-detail-history-table thead.table-secondary th {
+  background: #e5e7eb !important;
+  color: #374151 !important;
+  font-weight: 700;
+  border-color: #d1d5db !important;
+}
+.student-detail-page .student-detail-recur-add-btn {
+  background: #6b7280 !important;
+  border-color: #4b5563 !important;
+  color: #fff !important;
+}
+.student-detail-page .student-detail-recur-add-btn:hover {
+  background: #4b5563 !important;
+  border-color: #374151 !important;
+  color: #fff !important;
+}
+.student-detail-page .student-detail-card {
   border-radius: var(--radius-sm);
-  box-shadow: 0 2px 8px rgba(5, 150, 105, 0.18);
+  border: 1px solid var(--border-soft);
+}
+.student-detail-page .student-detail-col--main .student-detail-card:last-child {
+  margin-bottom: 0;
+}
+.student-detail-page .student-detail-card--history .table {
+  white-space: nowrap;
+}
+@media (max-width: 991.98px) {
+  .student-detail-page .student-detail-card--history {
+    margin-top: 0.25rem;
+  }
 }
 
 /* Calendar frame — clean with soft depth */
@@ -513,14 +559,25 @@ body:has(#calendar) .app-main {
   border-radius: 0 0 10px 10px !important;
 }
 .fc .fc-col-header-cell {
-  padding: 0.75rem 0.45rem !important;
+  padding: 0.85rem 0.5rem !important;
   font-weight: 700;
-  font-size: 0.8125rem;
+  font-size: 1rem;
   letter-spacing: 0.02em;
-  color: var(--text);
+  color: var(--brand-dark);
   vertical-align: middle;
   background: linear-gradient(180deg, #fff 0%, #f6faf9 100%) !important;
   border-bottom: 2px solid rgba(15, 118, 110, 0.1) !important;
+}
+/* Non-today: day name + date in app teal (links default to Bootstrap blue otherwise) */
+.fc .fc-col-header-cell .fc-col-header-cell-cushion,
+.fc .fc-col-header-cell a {
+  color: var(--brand) !important;
+  font-weight: 700;
+  font-size: 1rem;
+  text-decoration: none !important;
+}
+.fc .fc-col-header-cell a:hover {
+  color: var(--brand-dark) !important;
 }
 .fc .fc-timegrid-axis {
   background: linear-gradient(180deg, #fafaf9 0%, #f1f5f4 100%) !important;
@@ -554,10 +611,21 @@ body:has(#calendar) .app-main {
 .fc .fc-daygrid-day.fc-day-today {
   background: rgba(236, 253, 245, 0.65) !important;
 }
+/* Today only — same teal gradient as primary action (שיעור button) */
 .fc .fc-col-header-cell.fc-day-today {
-  background: rgba(209, 250, 229, 0.85) !important;
-  color: var(--brand-dark);
+  background: var(--gradient-cta) !important;
+  color: #fff !important;
   font-weight: 700;
+  border-bottom: 2px solid rgba(15, 118, 110, 0.35) !important;
+}
+.fc .fc-col-header-cell.fc-day-today .fc-col-header-cell-cushion,
+.fc .fc-col-header-cell.fc-day-today a {
+  color: #fff !important;
+  font-weight: 700;
+  text-decoration: none !important;
+}
+.fc .fc-col-header-cell.fc-day-today a:hover {
+  color: rgba(255, 255, 255, 0.92) !important;
 }
 
 /* “Now” line — on-brand accent */
@@ -818,6 +886,11 @@ a.fc-event.fc-event-mirror .ev-tag {
   padding: 0.65rem 1rem;
   margin-bottom: 0.5rem;
 }
+.btn-cal-edit--compact {
+  padding: 0.45rem 0.85rem;
+  font-size: 0.9rem;
+  margin-bottom: 0.35rem;
+}
 
 .alert-cal-recur {
   background: var(--gradient-brand-soft);
@@ -895,7 +968,7 @@ a.fc-event.fc-event-mirror .ev-tag {
 #detailModal .modal-header::before { display: none; }
 #detailModal .modal-header.s-paid       { border-inline-start-color: #059669; }
 #detailModal .modal-header.s-expected   { border-inline-start-color: #2DD4BF; }
-#detailModal .modal-header.s-attended { border-inline-start-color: #0D9488; }
+#detailModal .modal-header.s-attended { border-inline-start-color: #f59e0b; }
 #detailModal .modal-header.s-no-show  { border-inline-start-color: #6b7280; }
 #detailModal .modal-header.s-recurring { border-inline-start-color: #14B8A6; }
 #detailModal .modal-header.s-cancelled { border-inline-start-color: #94a3b8; }
@@ -911,12 +984,44 @@ a.fc-event.fc-event-mirror .ev-tag {
 #detailModal .cal-det-body {
   padding-top: 0.75rem;
 }
+/* Scrollbar on the right: overflow box is LTR; Hebrew content stays RTL inside */
+#detailModal.modal .modal-dialog-scrollable .modal-body.cal-det-body--scroll {
+  direction: ltr;
+}
+#detailModal .cal-det-scroll-inner {
+  direction: rtl;
+}
 .cal-det-microhint {
   line-height: 1.45;
   padding: 0.4rem 0.55rem;
   border-radius: 8px;
   background: rgba(15, 118, 110, 0.07);
   border: 1px solid rgba(15, 118, 110, 0.12);
+}
+/* Success banner — sticks to top of scroll area so it stays visible after save */
+#detailModal .cal-det-save-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  width: 100%;
+  margin: 0 0 0.75rem;
+  padding: 0.65rem 1rem;
+  border-radius: 10px;
+  font-weight: 700;
+  font-size: 0.9375rem;
+  color: #0f5132;
+  background: linear-gradient(180deg, #d1e7dd 0%, #badbcc 100%);
+  border: 1px solid #a3cfbb;
+  box-shadow: 0 2px 10px rgba(15, 81, 50, 0.12);
+  position: sticky;
+  top: 0;
+  z-index: 6;
+}
+#detailModal .cal-det-save-banner .cal-det-save-banner__icon {
+  font-size: 1.1rem;
+  color: #198754;
+  flex-shrink: 0;
 }
 #detailModal .det-section {
   padding: 0.65rem 0.75rem;
@@ -933,22 +1038,29 @@ a.fc-event.fc-event-mirror .ev-tag {
   color: #b45309;
 }
 
-/* Payment method chips — ביט / מזומן / פייבוקס */
-#detailModal .det-pay-method-chips .det-pay-chip {
+/* Group-lesson row: RTL — flex-start is the right edge; checkbox first sits on the right */
+#detailModal .det-group-lesson-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.5rem;
+  width: 100%;
+}
+#detailModal .det-group-lesson-row .form-check-input {
+  float: none;
+  margin: 0;
+}
+
+/* Payment method dropdown */
+#detailModal .det-pay-method-select {
   font-weight: 600;
   border-radius: 10px;
   border-width: 2px;
-  min-height: 2.5rem;
+  min-height: 2.75rem;
 }
-#detailModal .det-pay-method-chips .det-pay-chip.active {
-  background: linear-gradient(180deg, #ffd87a 0%, #f59e0b 100%);
-  border-color: #d97706;
-  color: #422006;
-  box-shadow: 0 2px 8px rgba(217, 119, 6, 0.25);
-}
-#detailModal .det-pay-method-chips .det-pay-chip:not(.active):hover {
-  border-color: rgba(15, 118, 110, 0.45);
-  background: rgba(15, 118, 110, 0.06);
+#detailModal .det-pay-method-select:focus {
+  border-color: rgba(15, 118, 110, 0.55);
+  box-shadow: 0 0 0 0.2rem rgba(15, 118, 110, 0.15);
 }
 #detailModal .det-section--price .det-section__icon {
   background: rgba(15, 118, 110, 0.12);
@@ -1014,34 +1126,15 @@ a.fc-event.fc-event-mirror .ev-tag {
   padding: 2px 12px;
 }
 
-/* Paid / unpaid toggle inside detail modal */
-#detPaidBtn {
-  width: 100%;
-  font-family: 'Rubik', sans-serif;
-  font-size: 0.95rem;
+/* Paid / unpaid actions in detail modal */
+#detailModal .det-paid-actions .btn {
   font-weight: 700;
-  padding: 0.7rem 0.85rem;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-soft);
-  cursor: pointer;
-  transition: var(--transition);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 0.5rem;
+  font-size: 0.9rem;
+  padding: 0.55rem 0.75rem;
 }
-#detPaidBtn.paid {
-  background: #E6F4EA;
-  color: #137333;
-  border-color: #CEEAD6;
+#detailModal .det-paid-actions .btn-danger {
+  font-weight: 700;
 }
-#detPaidBtn.paid:hover { background: #CEEAD6; }
-#detPaidBtn.unpaid {
-  background: #FEF7E0;
-  color: #B06000;
-  border-color: #F9E4A6;
-}
-#detPaidBtn.unpaid:hover { background: #FCEFC0; }
 
 /* ═══════════════════════════════════════════════════════════════
    Full Edit Modal
@@ -1058,6 +1151,79 @@ a.fc-event.fc-event-mirror .ev-tag {
   border-bottom: 1px solid var(--border-soft) !important;
 }
 #editModal .modal-title { font-weight: 700; letter-spacing: -0.02em; }
+
+/* Scrollbar on the right (scroll host LTR, form stays RTL) */
+#editModal .modal-body.cal-edit-body--scroll {
+  direction: ltr;
+}
+#editModal .cal-edit-scroll-inner {
+  direction: rtl;
+}
+
+/* Create-lesson modal: wider than modal-sm, still compact fields */
+#editModalDialog.cal-edit-modal--create {
+  max-width: 560px;
+}
+#editModalDialog.cal-edit-modal--create .lesson-form-core .form-label {
+  font-size: 0.8rem;
+  margin-bottom: 0.2rem;
+}
+#editModalDialog.cal-edit-modal--create .lesson-form-core .form-select,
+#editModalDialog.cal-edit-modal--create .lesson-form-core .form-control {
+  padding: 0.35rem 0.55rem;
+  font-size: 0.9rem;
+  min-height: calc(1.5em + 0.5rem + 2px);
+}
+#editModalDialog.cal-edit-modal--create .lesson-form-core textarea.form-control {
+  min-height: 3.25rem;
+}
+
+.cal-student-combobox .cal-student-dropdown {
+  position: absolute;
+  inset-inline-start: 0;
+  inset-inline-end: 0;
+  top: 100%;
+  margin-top: 2px;
+  z-index: 1080;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border-soft, #e2e8f0);
+  border-radius: var(--radius-sm, 8px);
+  box-shadow: var(--shadow-md, 0 8px 24px rgba(15, 23, 42, 0.12));
+}
+.cal-student-dropdown__item {
+  padding: 0.45rem 0.75rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  transition: background 0.12s ease;
+}
+.cal-student-dropdown__item:hover,
+.cal-student-dropdown__item:focus {
+  background: var(--brand-light, #ecfeff);
+  outline: none;
+}
+#editModal .cal-time-input-group .cal-time-field {
+  border-start-end-radius: 0;
+  border-end-end-radius: 0;
+}
+#editModal .cal-time-input-group .cal-time-picker-btn {
+  border-start-start-radius: 0;
+  border-end-start-radius: 0;
+  cursor: pointer;
+  color: var(--brand-dark);
+  border-color: var(--border-soft);
+  background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+}
+#editModal .cal-time-input-group .cal-time-picker-btn:hover,
+#editModal .cal-time-input-group .cal-time-picker-btn:focus {
+  background: #e2e8f0;
+  border-color: #94a3b8;
+  box-shadow: none;
+}
+#editModal .cal-time-input-group .cal-time-picker-btn .bi-clock {
+  font-size: 1.1rem;
+}
 
 /* Paid toggle inside edit modal */
 #paidToggleBtn {
@@ -1336,25 +1502,39 @@ a.fc-event.fc-event-mirror .ev-tag {
   vertical-align: top;
 }
 .students-page .price-tag {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
   font-size: 0.8125rem;
   font-weight: 800;
-  padding: 2px 8px;
-  line-height: 1.4;
+  padding: 4px 9px 3px;
+  line-height: 1.15;
+  white-space: normal;
+  text-align: center;
+  min-width: 3.25rem;
 }
-.students-page .student-quick-tomorrow {
-  box-shadow: none;
+.students-page .price-tag__amount {
   font-size: 0.8125rem;
+  font-weight: 800;
+  line-height: 1.1;
+}
+.students-page .price-tag__suffix {
+  display: block;
+  font-size: 0.62rem;
   font-weight: 700;
-  padding: 0.35rem 0.5rem;
+  opacity: 0.88;
+  margin-top: 2px;
+  letter-spacing: 0.02em;
 }
 .students-page .student-card__actions .btn {
   line-height: 1.3;
-  padding: 0.35rem 0.5rem;
-  font-size: 0.8125rem;
+  padding: 0.4rem 0.55rem;
+  font-size: 0.875rem;
 }
-.students-page .student-card__actions .btn-primary,
-.students-page .student-card__actions .btn-outline-secondary {
-  min-width: 2.15rem;
+.students-page .student-card__menu-btn {
+  min-width: 2.35rem;
+  font-weight: 700;
 }
 .students-page .student-card--in-family {
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 1px 6px rgba(15, 118, 110, 0.06);
@@ -1391,17 +1571,36 @@ a.fc-event.fc-event-mirror .ev-tag {
   font-size: 0.72rem;
   padding: 0.18rem 0.42rem;
 }
-.students-page .student-family-parents {
-  font-size: 0.8125rem !important;
-  margin-top: 0.25rem !important;
+.students-page .student-family-parent-block {
+  padding-inline-start: 0.1rem;
+}
+.students-page .student-family-parent-label {
+  font-size: 0.7rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.2rem;
+}
+.students-page .student-family-parents--name {
+  font-size: 1.08rem !important;
+  font-weight: 600 !important;
+  color: var(--text) !important;
   line-height: 1.35 !important;
+  margin-top: 0 !important;
 }
 .students-page .student-family-quickadd {
   font-weight: 600;
   border-radius: 6px;
-  padding: 0.25rem 0.5rem;
-  font-size: 0.78rem;
-  line-height: 1.25;
+  padding: 0.3rem 0.45rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
+  white-space: normal;
+  text-align: center;
+  max-width: 12.5rem;
+}
+.students-page .student-family-quickadd .student-family-quickadd__label {
+  display: inline;
 }
 
 /* ═══════════════════════════════════════════════════════════════

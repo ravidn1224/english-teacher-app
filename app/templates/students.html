@@ -47,16 +47,20 @@
           </a>
           {% endif %}
           {% set _fam_parent = fam.parent_names | join(' · ') %}
-          <a class="btn btn-outline-primary btn-sm student-family-quickadd text-nowrap"
-             href="/students/new?{% if fam.phone_display %}parent_phone={{ fam.phone_display|urlquote }}&amp;{% endif %}parent_name={{ _fam_parent|urlquote }}&amp;default_price={{ fam.members[0].default_price }}"
-             title="תלמיד חדש עם פרטי ההורה">
-            <i class="bi bi-person-plus" aria-hidden="true"></i><span class="d-none d-sm-inline ms-1">למשפחה</span>
+          {% set _fam_last = fam.members[0].last_name or '' %}
+          <a class="btn btn-outline-primary btn-sm student-family-quickadd"
+             href="/students/new?{% if fam.phone_display %}parent_phone={{ fam.phone_display|urlquote }}&amp;{% endif %}parent_name={{ _fam_parent|urlquote }}&amp;default_price={{ fam.members[0].default_price }}&amp;last_name={{ _fam_last|urlquote }}"
+             title="הוספת ילד/ה לאותה משפחה">
+            <i class="bi bi-person-plus" aria-hidden="true"></i><span class="ms-1 student-family-quickadd__label">הוסף ילד למשפחה</span>
           </a>
         </div>
         <span class="student-family-same-label d-none d-lg-inline">משפחה</span>
       </div>
       {% if fam.parent_names %}
-      <p class="student-family-parents text-muted mb-0 mt-1 text-truncate" title="{{ _fam_parent|e }}">{{ _fam_parent }}</p>
+      <div class="student-family-parent-block mt-2">
+        <div class="student-family-parent-label">שם ההורה</div>
+        <p class="student-family-parents student-family-parents--name mb-0 text-truncate" title="{{ _fam_parent|e }}">{{ _fam_parent }}</p>
+      </div>
       {% endif %}
     </header>
     <div class="student-family-shell__body">
@@ -66,7 +70,10 @@
           <div class="student-card h-100 student-card--in-family">
             <div class="d-flex justify-content-between align-items-start gap-1">
               <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
-              <span class="price-tag flex-shrink-0">{{ student.default_price }}₪</span>
+              <span class="price-tag flex-shrink-0" title="מחיר לשיעור">
+                <span class="price-tag__amount">{{ student.default_price }}₪</span>
+                <span class="price-tag__suffix">לשיעור</span>
+              </span>
             </div>
             {% if student.notes %}
             <div class="info-row text-truncate" title="{{ student.notes|e }}">
@@ -85,10 +92,8 @@
                 <span class="text-muted student-card__no-sched">אין קבוע</span>
               {% endif %}
             </div>
-            <div class="mt-auto d-flex gap-1 student-card__actions">
-              <a href="/calendar?date={{ tomorrow_iso }}&amp;student={{ student.id }}" class="btn btn-success btn-sm flex-grow-1 text-truncate student-quick-tomorrow" title="שיעור חדש מחר">מחר</a>
-              <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 flex-shrink-0" title="שיעורים" aria-label="שיעורים"><i class="bi bi-list-ul" aria-hidden="true"></i></a>
-              <a href="/students/{{ student.id }}/edit" class="btn btn-outline-secondary btn-sm px-2 flex-shrink-0" title="עריכה" aria-label="עריכה"><i class="bi bi-pencil" aria-hidden="true"></i></a>
+            <div class="mt-auto d-flex gap-1 student-card__actions justify-content-end">
+              <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 student-card__menu-btn flex-shrink-0" title="פרטים ועריכה" aria-label="פרטי תלמיד"><i class="bi bi-list" aria-hidden="true"></i></a>
             </div>
           </div>
         </div>
@@ -103,7 +108,10 @@
       <div class="student-card h-100">
         <div class="d-flex justify-content-between align-items-start gap-1">
           <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
-          <span class="price-tag flex-shrink-0">{{ student.default_price }}₪</span>
+          <span class="price-tag flex-shrink-0" title="מחיר לשיעור">
+            <span class="price-tag__amount">{{ student.default_price }}₪</span>
+            <span class="price-tag__suffix">לשיעור</span>
+          </span>
         </div>
         {% if student.parent_name or student.parent_phone %}
         <div class="info-row d-flex flex-wrap align-items-center gap-1" style="min-width:0" title="{% if student.parent_name %}{{ student.parent_name|e }}{% endif %}{% if student.parent_phone %} {{ student.parent_phone }}{% endif %}">
@@ -116,10 +124,11 @@
           {% endif %}
         </div>
         {% set _solo_parent = (student.parent_name or '')|trim %}
-        <a class="btn btn-outline-primary btn-sm student-family-quickadd student-card-solo-quickadd w-100 mt-1 text-truncate"
-           href="/students/new?{% if student.parent_phone %}parent_phone={{ student.parent_phone|urlquote }}&amp;{% endif %}parent_name={{ _solo_parent|urlquote }}&amp;default_price={{ student.default_price }}"
-           title="תלמיד חדש עם אותם פרטי הורה (אח/ות)">
-          <i class="bi bi-person-plus" aria-hidden="true"></i><span class="d-none d-sm-inline ms-1">למשפחה</span>
+        {% set _solo_last = student.last_name or '' %}
+        <a class="btn btn-outline-primary btn-sm student-family-quickadd student-card-solo-quickadd w-100 mt-1"
+           href="/students/new?{% if student.parent_phone %}parent_phone={{ student.parent_phone|urlquote }}&amp;{% endif %}parent_name={{ _solo_parent|urlquote }}&amp;default_price={{ student.default_price }}&amp;last_name={{ _solo_last|urlquote }}"
+           title="הוספת ילד/ה לאותה משפחה">
+          <i class="bi bi-person-plus" aria-hidden="true"></i><span class="ms-1 student-family-quickadd__label">הוסף ילד למשפחה</span>
         </a>
         {% endif %}
         {% if student.notes %}
@@ -139,10 +148,8 @@
             <span class="text-muted student-card__no-sched">אין קבוע</span>
           {% endif %}
         </div>
-        <div class="mt-auto d-flex gap-1 student-card__actions">
-          <a href="/calendar?date={{ tomorrow_iso }}&amp;student={{ student.id }}" class="btn btn-success btn-sm flex-grow-1 text-truncate student-quick-tomorrow" title="שיעור חדש מחר">מחר</a>
-          <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 flex-shrink-0" title="שיעורים" aria-label="שיעורים"><i class="bi bi-list-ul" aria-hidden="true"></i></a>
-          <a href="/students/{{ student.id }}/edit" class="btn btn-outline-secondary btn-sm px-2 flex-shrink-0" title="עריכה" aria-label="עריכה"><i class="bi bi-pencil" aria-hidden="true"></i></a>
+        <div class="mt-auto d-flex gap-1 student-card__actions justify-content-end">
+          <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 student-card__menu-btn flex-shrink-0" title="פרטים ועריכה" aria-label="פרטי תלמיד"><i class="bi bi-list" aria-hidden="true"></i></a>
         </div>
       </div>
     </div>

@@ -1,6 +1,5 @@
 import re
 from collections import defaultdict
-from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -103,7 +102,6 @@ def list_students(request: Request, db: Session = Depends(get_db)):
         .order_by(models.Student.last_name, models.Student.first_name)
         .all()
     )
-    tomorrow_iso = (date.today() + timedelta(days=1)).isoformat()
     student_families = _family_groups_from_students(students)
     return templates.TemplateResponse(
         "students.html",
@@ -112,7 +110,6 @@ def list_students(request: Request, db: Session = Depends(get_db)):
             "student_families": student_families,
             "day_names": DAY_NAMES,
             "day_names_short": DAY_NAMES_SHORT,
-            "tomorrow_iso": tomorrow_iso,
         },
     )
 
@@ -123,9 +120,11 @@ def new_student_form(
     parent_name: Optional[str] = None,
     parent_phone: Optional[str] = None,
     default_price: Optional[int] = None,
+    last_name: Optional[str] = None,
 ):
     prefill_pn = (parent_name or "").strip()
     prefill_pp = (parent_phone or "").strip()
+    prefill_ln = (last_name or "").strip()
     prefill_price = default_price if default_price is not None else None
     if prefill_price is not None and prefill_price < 0:
         prefill_price = 0
@@ -138,6 +137,7 @@ def new_student_form(
             "action": "new",
             "prefill_parent_name": prefill_pn,
             "prefill_parent_phone": prefill_pp,
+            "prefill_last_name": prefill_ln,
             "prefill_default_price": prefill_price,
         },
     )
@@ -170,7 +170,12 @@ def create_student(
 
 @router.get("/{student_id}", response_class=HTMLResponse)
 def student_detail(request: Request, student_id: int, db: Session = Depends(get_db)):
-    student = db.query(models.Student).filter(models.Student.id == student_id).first()
+    student = (
+        db.query(models.Student)
+        .options(joinedload(models.Student.schedules))
+        .filter(models.Student.id == student_id)
+        .first()
+    )
     if not student:
         raise HTTPException(status_code=404, detail="תלמיד לא נמצא")
     lessons = (
@@ -179,33 +184,24 @@ def student_detail(request: Request, student_id: int, db: Session = Depends(get_
         .order_by(models.Lesson.lesson_date.desc())
         .all()
     )
-    tomorrow_iso = (date.today() + timedelta(days=1)).isoformat()
-    return templates.TemplateResponse("student_detail.html", {
-        "request": request,
-        "student": student,
-        "lessons": lessons,
-        "day_names": DAY_NAMES,
-        "tomorrow_iso": tomorrow_iso,
-    })
+    return templates.TemplateResponse(
+        "student_detail.html",
+        {
+            "request": request,
+            "student": student,
+            "lessons": lessons,
+            "day_names": DAY_NAMES,
+        },
+    )
 
 
 @router.get("/{student_id}/edit", response_class=HTMLResponse)
 def edit_student_form(request: Request, student_id: int, db: Session = Depends(get_db)):
+    """עריכה מתבצעת בדף התלמיד; נתיב זה שומר קישורים ישנים."""
     student = db.query(models.Student).filter(models.Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="תלמיד לא נמצא")
-    return templates.TemplateResponse(
-        "student_form.html",
-        {
-            "request": request,
-            "student": student,
-            "day_names": DAY_NAMES,
-            "action": "edit",
-            "prefill_parent_name": None,
-            "prefill_parent_phone": None,
-            "prefill_default_price": None,
-        },
-    )
+    return RedirectResponse(url=f"/students/{student_id}", status_code=302)
 
 
 @router.post("/{student_id}/edit")
@@ -260,6 +256,7 @@ def add_schedule(
         day_of_week=day_of_week,
         start_time=start,
         end_time=end,
+        frequency="weekly",
     )
     db.add(sched)
     db.commit()

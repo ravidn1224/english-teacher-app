@@ -15,6 +15,8 @@ class Student(Base):
     parent_name = Column(String(200))
     parent_phone = Column(String(30))
     default_price = Column(Integer, default=0)  # price in ILS per lesson
+    # Running balance in ₪: positive = credit, negative = owes
+    balance = Column(Integer, nullable=False, default=0)
     notes = Column(Text, default="")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
@@ -31,6 +33,12 @@ class RegularSchedule(Base):
     day_of_week = Column(Integer, nullable=False)
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
+    # weekly | biweekly | monthly (default weekly for legacy rows)
+    frequency = Column(String(20), nullable=False, default="weekly")
+    # First occurrence date for biweekly parity (week of this date = week 0)
+    anchor_date = Column(Date, nullable=True)
+    # For monthly: which calendar day (1–31); short months use last day if needed
+    day_of_month = Column(Integer, nullable=True)
 
     student = relationship("Student", back_populates="schedules")
 
@@ -44,6 +52,8 @@ class Lesson(Base):
     start_time = Column(Time, nullable=False)
     end_time = Column(Time, nullable=False)
     price = Column(Integer, nullable=False, default=0)  # ILS
+    # Group session (lower per-student charge); shown in calendar payment UI
+    is_group_lesson = Column(Boolean, nullable=False, default=False)
     # scheduled / completed / cancelled
     status = Column(String(20), nullable=False, default="scheduled")
     # expected = upcoming / not marked yet (blue), arrived = was in class (blue), no_show = did not arrive (grey)
@@ -53,7 +63,13 @@ class Lesson(Base):
     paid_amount = Column(Integer, nullable=True)
     # cash | bit | paybox | other (empty = not set)
     payment_method = Column(String(20), nullable=False, default="")
+    # Free text when payment_method == other (e.g. custom channel)
+    payment_note = Column(String(255), nullable=False, default="")
     notes = Column(Text, default="")
+    # Last (amount_paid - lesson_charge) applied to student.balance for this row
+    balance_applied = Column(Integer, nullable=False, default=0)
+    # True after teacher chose שולם / לא שולם (affects balance for unpaid)
+    payment_finalized = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     student = relationship("Student", back_populates="lessons")
