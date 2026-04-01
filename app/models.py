@@ -78,6 +78,8 @@ class RegularSchedule(Base):
     anchor_date = Column(Date, nullable=True)
     # For monthly: which calendar day (1–31); short months use last day if needed
     day_of_month = Column(Integer, nullable=True)
+    # First calendar day to emit virtual occurrences (NULL = no lower bound, legacy)
+    recurring_start_date = Column(Date, nullable=True)
 
     student = relationship("Student", back_populates="schedules")
 

@@ -4,7 +4,7 @@ from io import BytesIO
 from typing import Any, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from sqlalchemy.orm import Session, joinedload
 
 from ..database import get_db
@@ -162,26 +162,110 @@ def _family_balance_on_or_before(db: Session, family_id: int, on_or_before: date
     return 0
 
 
-def _ledger_month_totals(db: Session, family_id: int, year: int, month: int) -> Tuple[int, int]:
-    mk = _month_key(year, month)
-    rows = (
-        db.query(models.BalanceTransaction)
-        .filter(models.BalanceTransaction.family_id == family_id)
-        .filter(models.BalanceTransaction.month_key == mk)
+def _lesson_net_aligned_with_calendar_balance(lesson: models.Lesson) -> int:
+    """Cash effect on balance — must stay aligned with lessons._lesson_payment_net_for_balance."""
+    if lesson.status == "cancelled":
+        return 0
+    c = int(lesson.price or 0)
+    if lesson.is_paid:
+        p = int(lesson.paid_amount) if lesson.paid_amount is not None else c
+        return p - c
+    if not bool(getattr(lesson, "payment_finalized", False)):
+        return 0
+    att = (getattr(lesson, "attendance", None) or "expected").lower()
+    if att == "no_show":
+        return 0
+    return -c
+
+
+def _family_balance_from_lessons_up_to(db: Session, family_id: int, through: date) -> int:
+    """Net family balance from all non-cancelled lessons on or before ``through`` (calendar / ledger rules)."""
+    sids = [
+        s.id
+        for s in db.query(models.Student)
+        .filter(models.Student.family_id == family_id)
+        .all()
+    ]
+    if not sids:
+        return 0
+    lessons = (
+        db.query(models.Lesson)
+        .filter(models.Lesson.student_id.in_(sids))
+        .filter(models.Lesson.status != "cancelled")
+        .filter(models.Lesson.lesson_date <= through)
+        .order_by(
+            models.Lesson.lesson_date,
+            models.Lesson.start_time,
+            models.Lesson.id,
+        )
         .all()
     )
-    ch = sum(int(r.charge or 0) for r in rows)
-    pd = sum(int(r.paid or 0) for r in rows)
-    return ch, pd
+    if not lessons:
+        return 0
+    first_d = min(l.lesson_date for l in lessons)
+    bal = _family_balance_on_or_before(db, family_id, first_d - timedelta(days=1))
+    for L in lessons:
+        bal += _lesson_net_aligned_with_calendar_balance(L)
+    return bal
+
+
+def _family_first_reportable_month_bounds(
+    db: Session, family_id: int
+) -> Optional[Tuple[int, int]]:
+    """First calendar month that has a lesson counted in the monthly report (הגיע/לא הגיע)."""
+    sids = [
+        s.id
+        for s in db.query(models.Student)
+        .filter(models.Student.family_id == family_id)
+        .all()
+    ]
+    if not sids:
+        return None
+    lessons = (
+        db.query(models.Lesson)
+        .filter(models.Lesson.student_id.in_(sids))
+        .filter(models.Lesson.status != "cancelled")
+        .all()
+    )
+    best: Optional[date] = None
+    for L in lessons:
+        if not _lesson_in_monthly_report(L):
+            continue
+        d = L.lesson_date
+        if best is None or d < best:
+            best = d
+    if best is None:
+        return None
+    return best.year, best.month
+
+
+def _family_opening_carry_at_month_start(
+    db: Session, family_id: int, year: int, month: int
+) -> int:
+    """יתרה בתחילת החודש: סגירה שרשרתית מהחודש הראשון עם שיעור בדוח, לא יומן גולמי בלבד."""
+    fm = _family_first_reportable_month_bounds(db, family_id)
+    if fm is None:
+        py, pm = _shift_month(year, month, -1)
+        return _family_balance_from_lessons_up_to(db, family_id, _last_day_of_month(py, pm))
+    fy, fm_m = fm
+    if (year, month) < (fy, fm_m):
+        py, pm = _shift_month(year, month, -1)
+        return _family_balance_from_lessons_up_to(db, family_id, _last_day_of_month(py, pm))
+    py, pm = _shift_month(fy, fm_m, -1)
+    carry = _family_balance_on_or_before(db, family_id, _last_day_of_month(py, pm))
+    y, m = fy, fm_m
+    while (y, m) < (year, month):
+        ch, pd = _family_reportable_lesson_totals(db, family_id, y, m)
+        carry = carry + pd - ch
+        y, m = _shift_month(y, m, 1)
+    return carry
 
 
 def _family_month_snapshot(db: Session, family_id: int, year: int, month: int) -> dict[str, Any]:
-    py, pm = _shift_month(year, month, -1)
-    prev_end = _last_day_of_month(py, pm)
-    carry = _family_balance_on_or_before(db, family_id, prev_end)
-    ch, pd = _ledger_month_totals(db, family_id, year, month)
-    end_d = _last_day_of_month(year, month)
-    end_bal = _family_balance_on_or_before(db, family_id, end_d)
+    """חיוב/שולם מהשיעורים. יתרה סוף חודש = מעבר + שולם − חיוב; המעבר הוא סוף חודש קודם באותה שרשרת (מתאים למעקב חוב)."""
+    ch, pd = _family_reportable_lesson_totals(db, family_id, year, month)
+    carry = _family_opening_carry_at_month_start(db, family_id, year, month)
+    end_bal = carry + pd - ch
     return {
         "year": year,
         "month": month,
@@ -212,10 +296,27 @@ def _chain_reset_during_month(db: Session, family_id: int, year: int, month: int
     )
     running = carry
     for tx in txs:
-        running += int(tx.paid or 0) - int(tx.charge or 0)
+        running += int(tx.balance_after) - int(tx.balance_before)
         if running >= 0:
             return True
     return running >= 0
+
+
+def _family_should_show_debt_trail(
+    carry_over: int, end_balance: int, debt_trail: List[dict[str, Any]]
+) -> bool:
+    """Breadcrumb only while some step still reflects חוב (negative carry or end). When fully settled — hide."""
+
+    def _has_debt(a: int, b: int) -> bool:
+        return int(a) < 0 or int(b) < 0
+
+    if not debt_trail:
+        return False
+    if _has_debt(carry_over, end_balance):
+        return True
+    return any(
+        _has_debt(s.get("carry_over", 0), s.get("end_balance", 0)) for s in debt_trail
+    )
 
 
 def _build_debt_trail(db: Session, family_id: int, year: int, month: int) -> List[dict[str, Any]]:
@@ -263,6 +364,38 @@ def _lesson_paid_display(lesson: models.Lesson) -> int:
     return 0
 
 
+def _family_reportable_lesson_totals(
+    db: Session, family_id: int, year: int, month: int
+) -> Tuple[int, int]:
+    """חיוב/שולם לחודש לפי שיעורים בפועל — לא סכימת שורות יומן (כל עדכון הוסיף שורה מלאה)."""
+    start_d = date(year, month, 1)
+    end_d = _last_day_of_month(year, month)
+    sids = [
+        s.id
+        for s in db.query(models.Student)
+        .filter(models.Student.family_id == family_id)
+        .all()
+    ]
+    if not sids:
+        return 0, 0
+    lessons = (
+        db.query(models.Lesson)
+        .filter(models.Lesson.student_id.in_(sids))
+        .filter(models.Lesson.lesson_date >= start_d)
+        .filter(models.Lesson.lesson_date <= end_d)
+        .filter(models.Lesson.status != "cancelled")
+        .all()
+    )
+    ch = 0
+    pd = 0
+    for L in lessons:
+        if not _lesson_in_monthly_report(L):
+            continue
+        ch += int(L.price or 0)
+        pd += _lesson_paid_display(L)
+    return ch, pd
+
+
 def _lesson_row_class(lesson: models.Lesson) -> str:
     charge = int(lesson.price or 0)
     fin = bool(getattr(lesson, "payment_finalized", False))
@@ -289,7 +422,6 @@ def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[st
     )
 
     report_rows: List[dict[str, Any]] = []
-    total_carry = 0
     total_month_charge = 0
     total_month_paid = 0
     total_end = 0
@@ -321,7 +453,6 @@ def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[st
         if has_activity:
             families_with_lessons.add(fam.id)
 
-        total_carry += snap["carry_over"]
         total_month_charge += snap["month_charge"]
         total_month_paid += snap["month_paid"]
         total_end += snap["end_balance"]
@@ -383,7 +514,9 @@ def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[st
             )
 
         debt_trail = _build_debt_trail(db, fam.id, year, month)
-        show_trail = snap["carry_over"] != 0 and len(debt_trail) > 0
+        show_trail = _family_should_show_debt_trail(
+            snap["carry_over"], snap["end_balance"], debt_trail
+        )
 
         report_rows.append(
             {
@@ -414,7 +547,6 @@ def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[st
         "summary": {
             "lessons_done": lessons_done_count,
             "families_with_lessons": len(families_with_lessons),
-            "carry_sum": total_carry,
             "month_charge": total_month_charge,
             "month_paid": total_month_paid,
             "end_balance_sum": total_end,
@@ -502,6 +634,57 @@ def reports_page(
             "next_month_q": f"{ny}-{nm:02d}",
             **ctx,
         },
+    )
+
+
+@router.get("/api/monthly-data")
+def reports_monthly_data_api(
+    month: Optional[str] = Query(None, description="YYYY-MM"),
+    db: Session = Depends(get_db),
+):
+    """JSON snapshot for דוח חודשי — refresh after payments without full reload."""
+    today = date.today()
+    y, m = _month_year_from_query(month, today)
+    ctx = _build_monthly_report_context(db, y, m)
+    families_out: List[dict[str, Any]] = []
+    for f in ctx["monthly_families"]:
+        families_out.append(
+            {
+                "id": f["id"],
+                "filter_class": f["filter_class"],
+                "end_balance": f["end_balance"],
+                "carry_over": f["carry_over"],
+                "month_charge": f["month_charge"],
+                "month_paid": f["month_paid"],
+                "show_debt_trail": f["show_debt_trail"],
+                "debt_trail": [
+                    {
+                        "month_key": s["month_key"],
+                        "month_label_he": s["month_label_he"],
+                        "carry_over": s["carry_over"],
+                        "end_balance": s["end_balance"],
+                    }
+                    for s in f["debt_trail"]
+                ],
+                "students": [
+                    {
+                        "id": s["id"],
+                        "name": s["name"],
+                        "charge_sum": s["charge_sum"],
+                        "paid_sum": s["paid_sum"],
+                        "lesson_count": s["lesson_count"],
+                    }
+                    for s in f["students"]
+                ],
+            }
+        )
+    return JSONResponse(
+        content={
+            "month_input": f"{y}-{m:02d}",
+            "summary": ctx["summary"],
+            "filter_counts": ctx["filter_counts"],
+            "families": families_out,
+        }
     )
 
 
@@ -697,8 +880,8 @@ def reports_export_monthly_xlsx(
                 row=r,
                 column=1,
                 value=(
-                    f"העברה: {fam['carry_over']} · חיוב חודש: {fam['month_charge']} · "
-                    f"שולם: {fam['month_paid']} · יתרה סוף: {fam['end_balance']}"
+                    f"חיוב חודש: {fam['month_charge']} · שולם: {fam['month_paid']} · "
+                    f"יתרה סוף חודש: {fam['end_balance']}"
                 ),
             ).font = Font(bold=True)
             r += 1

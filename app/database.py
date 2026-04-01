@@ -96,6 +96,33 @@ def ensure_schema(engine):
             if "day_of_month" not in rs_cols:
                 with engine.begin() as conn:
                     conn.execute(text("ALTER TABLE regular_schedule ADD COLUMN day_of_month INTEGER NULL"))
+            if "recurring_start_date" not in rs_cols:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE regular_schedule ADD COLUMN recurring_start_date DATE NULL"
+                        )
+                    )
+        if (
+            "families" in insp.get_table_names()
+            and "lessons" in insp.get_table_names()
+            and "students" in insp.get_table_names()
+        ):
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE families f
+                        SET balance = 0
+                        WHERE EXISTS (SELECT 1 FROM students s WHERE s.family_id = f.id)
+                        AND NOT EXISTS (
+                            SELECT 1 FROM students s
+                            INNER JOIN lessons l ON l.student_id = s.id
+                            WHERE s.family_id = f.id AND l.status != 'cancelled'
+                        )
+                        """
+                    )
+                )
     except Exception as exc:
         _log.warning("ensure_schema: %s", exc)
 

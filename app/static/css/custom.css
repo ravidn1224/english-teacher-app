@@ -1063,9 +1063,6 @@ a.fc-event.fc-event-mirror .ev-tag {
   box-shadow: 0 0 0 0.2rem rgba(15, 118, 110, 0.15);
 }
 
-#detailModal #detFamilyBalanceBadgeWrap.min-h-badge {
-  min-height: 0;
-}
 #detailModal .det-pay-method-chips .det-pay-chip {
   font-weight: 600;
   border-radius: 10px;
@@ -1805,7 +1802,7 @@ a.fc-event.fc-event-mirror .ev-tag {
 .monthly-report-page { max-width: 1100px; margin-inline: auto; }
 .monthly-summary-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 1rem;
 }
 .monthly-stat-card {
@@ -1890,14 +1887,28 @@ a.fc-event.fc-event-mirror .ev-tag {
   background: rgba(255, 252, 249, 0.6);
 }
 
+.monthly-section-label {
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+
 .monthly-family-summary-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
   gap: 0.75rem;
   margin-bottom: 1rem;
 }
+.monthly-family-summary-row--3 {
+  grid-template-columns: repeat(3, 1fr);
+}
 @media (max-width: 640px) {
   .monthly-family-summary-row { grid-template-columns: repeat(2, 1fr); }
+  .monthly-family-summary-row--3 { grid-template-columns: 1fr; }
 }
 .monthly-fs-label { font-size: 0.7rem; font-weight: 700; color: var(--text-muted); }
 .monthly-fs-val { font-weight: 800; font-size: 1rem; }
@@ -1947,16 +1958,37 @@ a.fc-event.fc-event-mirror .ev-tag {
 }
 .monthly-student-head {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.35rem;
+  align-items: flex-start;
+  gap: 0.5rem;
   padding: 0.65rem 0.85rem;
   cursor: pointer;
   font-weight: 700;
 }
 .monthly-student-head:hover { background: var(--brand-light); }
-.monthly-student-head__chev { transition: transform 0.2s ease; color: var(--text-muted); }
+.monthly-student-head__chev {
+  transition: transform 0.2s ease;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  margin-top: 0.15rem;
+}
 .monthly-student-head.is-open .monthly-student-head__chev { transform: rotate(-180deg); }
+.monthly-student-head__main {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.5rem;
+  flex: 1;
+  min-width: 0;
+  font-weight: 700;
+}
+.monthly-student-head__name { flex-shrink: 0; }
+.monthly-student-head__sum {
+  font-size: 0.82rem;
+  font-weight: 600;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.monthly-student-head__sep { opacity: 0.45; margin-inline: 0.15rem; }
 .monthly-lesson-table-wrap { border-top: 1px solid var(--border-soft); }
 .monthly-lesson-table { font-size: 0.86rem; }
 .monthly-lesson-table thead th {

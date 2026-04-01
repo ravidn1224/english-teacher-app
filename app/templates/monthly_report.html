@@ -2,13 +2,16 @@
 {% block title %}דוח חודשי{% endblock %}
 
 {% block content %}
-<div class="monthly-report-page">
+<div class="monthly-report-page" id="mr-root" data-mr-month="{{ month_input }}">
   <div class="d-flex justify-content-between align-items-start flex-wrap gap-3 mb-4">
     <h1 class="page-title mb-0 d-flex align-items-center gap-2">
       <i class="bi bi-graph-up-arrow text-danger" aria-hidden="true"></i>
       דוח חודשי
     </h1>
     <div class="d-flex gap-2 flex-wrap no-print">
+      <button type="button" class="btn btn-outline-primary" id="mr-btn-refresh" title="עדכון אחרי תשלומים בלוח">
+        <i class="bi bi-arrow-clockwise me-1"></i>רענון
+      </button>
       <button type="button" class="btn btn-outline-secondary" onclick="window.print()">
         <i class="bi bi-printer me-1"></i>הדפסה
       </button>
@@ -36,56 +39,46 @@
     </div>
   </div>
 
-  <div class="monthly-summary-grid mb-4">
+  <div class="monthly-summary-grid mb-4" id="mr-summary-grid">
     <div class="monthly-stat-card">
       <div class="monthly-stat-card__icon text-primary"><i class="bi bi-journal-bookmark"></i></div>
       <div>
         <div class="monthly-stat-card__label">שיעורים שבוצעו</div>
-        <div class="monthly-stat-card__value">{{ summary.lessons_done }}</div>
-        <div class="monthly-stat-card__sub">{{ summary.families_with_lessons }} משפחות</div>
-      </div>
-    </div>
-    <div class="monthly-stat-card monthly-stat-card--carry">
-      <div class="monthly-stat-card__icon text-danger"><i class="bi bi-pin-map"></i></div>
-      <div>
-        <div class="monthly-stat-card__label">העברה מחודש קודם</div>
-        <div class="monthly-stat-card__value {% if summary.carry_sum < 0 %}text-danger{% elif summary.carry_sum > 0 %}text-primary{% endif %}">
-          {% if summary.carry_sum < 0 %}−‎₪{{ summary.carry_sum|abs }}{% elif summary.carry_sum > 0 %}+‎₪{{ summary.carry_sum }}{% else %}₪0{% endif %}
-        </div>
-        <div class="monthly-stat-card__sub">{% if summary.carry_sum < 0 %}חוב שנמשך{% elif summary.carry_sum > 0 %}זיכוי נמשך{% else %}ללא העברה{% endif %}</div>
+        <div class="monthly-stat-card__value" id="mr-val-lessons">{{ summary.lessons_done }}</div>
+        <div class="monthly-stat-card__sub"><span id="mr-val-fam-lessons">{{ summary.families_with_lessons }}</span> משפחות</div>
       </div>
     </div>
     <div class="monthly-stat-card">
       <div class="monthly-stat-card__icon text-success"><i class="bi bi-cash-coin"></i></div>
       <div>
         <div class="monthly-stat-card__label">שולם החודש</div>
-        <div class="monthly-stat-card__value text-success">₪{{ summary.month_paid }}</div>
-        <div class="monthly-stat-card__sub">מתוך ‎₪{{ summary.month_charge }} חיוב</div>
+        <div class="monthly-stat-card__value text-success" id="mr-val-paid">₪{{ summary.month_paid }}</div>
+        <div class="monthly-stat-card__sub">מתוך ‎₪<span id="mr-val-charge-sub">{{ summary.month_charge }}</span> חיוב</div>
       </div>
     </div>
     <div class="monthly-stat-card">
       <div class="monthly-stat-card__icon text-warning"><i class="bi bi-exclamation-triangle"></i></div>
       <div>
-        <div class="monthly-stat-card__label">יתרה סוף חודש</div>
-        <div class="monthly-stat-card__value {% if summary.end_balance_sum < 0 %}text-danger{% elif summary.end_balance_sum > 0 %}text-primary{% endif %}">
-          {% if summary.end_balance_sum < 0 %}חוב ‎₪{{ summary.end_balance_sum|abs }}{% elif summary.end_balance_sum > 0 %}זיכוי ‎₪{{ summary.end_balance_sum }}{% else %}₪0{% endif %}
+        <div class="monthly-stat-card__label">יתרה נטו (כל המשפחות)</div>
+        <div class="monthly-stat-card__value {% if summary.end_balance_sum < 0 %}text-danger{% elif summary.end_balance_sum > 0 %}text-primary{% endif %}" id="mr-val-end-wrap">
+          <span id="mr-val-end">{% if summary.end_balance_sum < 0 %}חוב ‎₪{{ summary.end_balance_sum|abs }}{% elif summary.end_balance_sum > 0 %}זיכוי ‎₪{{ summary.end_balance_sum }}{% else %}₪0{% endif %}</span>
         </div>
-        <div class="monthly-stat-card__sub">{{ summary.families_in_debt_end }} משפחות עם חוב</div>
+        <div class="monthly-stat-card__sub">כולל כל החיובים והתשלומים · <span id="mr-val-indebt">{{ summary.families_in_debt_end }}</span> משפחות עם חוב</div>
       </div>
     </div>
   </div>
 
-  <div class="monthly-filter-tabs no-print mb-4" role="tablist">
-    <button type="button" class="monthly-filter-tab active" data-monthly-filter="all">הכל ({{ filter_counts.all }})</button>
-    <button type="button" class="monthly-filter-tab" data-monthly-filter="debt">עם חוב ({{ filter_counts.debt }})</button>
-    <button type="button" class="monthly-filter-tab" data-monthly-filter="credit">עם זיכוי ({{ filter_counts.credit }})</button>
-    <button type="button" class="monthly-filter-tab" data-monthly-filter="balanced">מאוזנים ({{ filter_counts.balanced }})</button>
+  <div class="monthly-filter-tabs no-print mb-4" role="tablist" id="mr-filter-tabs">
+    <button type="button" class="monthly-filter-tab active" data-monthly-filter="all">הכל (<span class="mr-tab-n" data-mr-tab="all">{{ filter_counts.all }}</span>)</button>
+    <button type="button" class="monthly-filter-tab" data-monthly-filter="debt">עם חוב (<span class="mr-tab-n" data-mr-tab="debt">{{ filter_counts.debt }}</span>)</button>
+    <button type="button" class="monthly-filter-tab" data-monthly-filter="credit">עם זיכוי (<span class="mr-tab-n" data-mr-tab="credit">{{ filter_counts.credit }}</span>)</button>
+    <button type="button" class="monthly-filter-tab" data-monthly-filter="balanced">מאוזנים (<span class="mr-tab-n" data-mr-tab="balanced">{{ filter_counts.balanced }}</span>)</button>
   </div>
 
   {% if monthly_families %}
   <div class="monthly-family-list">
     {% for fam in monthly_families %}
-    <div class="monthly-family-card monthly-family-card--{{ fam.filter_class }}" data-monthly-family-filter="{{ fam.filter_class }}">
+    <div class="monthly-family-card monthly-family-card--{{ fam.filter_class }}" data-monthly-family-filter="{{ fam.filter_class }}" data-mr-family="{{ fam.id }}">
       <div class="monthly-family-card__head" data-bs-toggle="collapse" data-bs-target="#fam-body-{{ fam.id }}" aria-expanded="false" role="button">
         <span class="monthly-family-card__chev"><i class="bi bi-chevron-down"></i></span>
         <div class="monthly-family-card__main">
@@ -99,7 +92,7 @@
             <span class="mx-1">·</span>{{ fam.lesson_count }} שיעורים
           </div>
         </div>
-        <div class="monthly-family-card__badge" onclick="event.stopPropagation()">
+        <div class="monthly-family-card__badge mr-fam-header-badge" onclick="event.stopPropagation()">
           {% if fam.end_balance < 0 %}
             <span class="badge rounded-pill bg-danger-subtle text-danger border border-danger-subtle">חוב ‎₪{{ (-fam.end_balance) }}</span>
           {% elif fam.end_balance > 0 %}
@@ -111,29 +104,36 @@
       </div>
 
       <div id="fam-body-{{ fam.id }}" class="collapse monthly-family-card__body">
-        <div class="monthly-family-summary-row">
-          <div class="monthly-fs-cell">
-            <div class="monthly-fs-label">העברה</div>
-            <div class="monthly-fs-val {% if fam.carry_over < 0 %}text-danger{% elif fam.carry_over > 0 %}text-primary{% endif %}">
-              {% if fam.carry_over < 0 %}−‎₪{{ fam.carry_over|abs }}{% elif fam.carry_over > 0 %}+‎₪{{ fam.carry_over }}{% else %}₪0{% endif %}
-            </div>
-          </div>
+        {% if fam.students|selectattr('lesson_count', 'gt', 0)|list|length == 0 %}
+        <p class="small text-muted mb-3">אין שיעורים מסומנים «הגיע/ה» או «לא הגיע/ה» בחודש הזה — מוצגת רק יתרת המשפחה לפי הספר.</p>
+        {% endif %}
+
+        <div class="monthly-section-label"><i class="bi bi-people-fill me-1"></i>סיכום משפחה</div>
+        <div class="monthly-family-summary-row monthly-family-summary-row--3 mb-3">
           <div class="monthly-fs-cell">
             <div class="monthly-fs-label">חיוב החודש</div>
-            <div class="monthly-fs-val">₪{{ fam.month_charge }}</div>
+            <div class="monthly-fs-val mr-fam-charge">₪{{ fam.month_charge }}</div>
           </div>
           <div class="monthly-fs-cell">
             <div class="monthly-fs-label">שולם החודש</div>
-            <div class="monthly-fs-val text-success">₪{{ fam.month_paid }}</div>
+            <div class="monthly-fs-val text-success mr-fam-paid">₪{{ fam.month_paid }}</div>
           </div>
           <div class="monthly-fs-cell">
             <div class="monthly-fs-label">יתרה סוף חודש</div>
-            <div class="monthly-fs-val {% if fam.end_balance < 0 %}text-danger{% elif fam.end_balance > 0 %}text-primary{% endif %}">
+            <div class="monthly-fs-val mr-fam-end {% if fam.end_balance < 0 %}text-danger{% elif fam.end_balance > 0 %}text-primary{% endif %}">
               {% if fam.end_balance < 0 %}−‎₪{{ fam.end_balance|abs }}{% elif fam.end_balance > 0 %}+‎₪{{ fam.end_balance }}{% else %}₪0{% endif %}
             </div>
           </div>
         </div>
+        <p class="small text-muted mb-3 mr-fam-carry-line {% if fam.carry_over == 0 %}d-none{% endif %}" data-mr-carry-wrap>
+          <span class="mr-fam-carry-label">לפני שיעורי החודש (מעבר):</span>
+          <span class="mr-fam-carry-val fw-semibold">
+            {% if fam.carry_over < 0 %}חוב ‎₪{{ (-fam.carry_over) }}{% elif fam.carry_over > 0 %}זיכוי ‎₪{{ fam.carry_over }}{% else %}מאוזן{% endif %}
+          </span>
+          <span class="d-block mt-1 mr-fam-carry-hint">יתרה סוף חודש = מעבר + שולם החודש − חיוב החודש.</span>
+        </p>
 
+        <div class="mr-debt-trail-host">
         {% if fam.show_debt_trail %}
         <div class="monthly-debt-trail">
           <div class="monthly-debt-trail__title"><i class="bi bi-signpost-split me-2"></i>מעקב חוב — מאיפה הגיע?</div>
@@ -142,8 +142,8 @@
             <a href="/reports/?month={{ step.month_key }}" class="monthly-debt-trail__chip">
               <span class="monthly-debt-trail__chip-month">{{ step.month_label_he }}</span>
               <span class="monthly-debt-trail__chip-lines small text-muted">
-                העברה: {% if step.carry_over < 0 %}−‎₪{{ step.carry_over|abs }}{% elif step.carry_over > 0 %}+‎₪{{ step.carry_over }}{% else %}₪0{% endif %}
-                · סוף: {% if step.end_balance < 0 %}−‎₪{{ step.end_balance|abs }}{% elif step.end_balance > 0 %}+‎₪{{ step.end_balance }}{% else %}₪0{% endif %}
+                יתרה סוף חודש:
+                {% if step.end_balance < 0 %}חוב ‎₪{{ step.end_balance|abs }}{% elif step.end_balance > 0 %}זיכוי ‎₪{{ step.end_balance }}{% else %}מאוזן{% endif %}
               </span>
             </a>
             {% if not loop.last %}<span class="monthly-debt-trail__arrow" aria-hidden="true">→</span>{% endif %}
@@ -151,21 +151,24 @@
           </div>
         </div>
         {% endif %}
+        </div>
 
-        {% if fam.students|selectattr('lesson_count', 'gt', 0)|list|length == 0 %}
-        <p class="small text-muted mb-0">אין שיעורים מסומנים «הגיע/ה» או «לא הגיע/ה» בחודש הזה — מוצגת רק יתרת המשפחה לפי הספר.</p>
-        {% endif %}
+        <div class="monthly-section-label mt-2"><i class="bi bi-list-ul me-1"></i>פירוט לפי תלמיד</div>
 
         {% for st in fam.students %}
         {% if st.lesson_count > 0 %}
         <div class="monthly-student-block">
           <div class="monthly-student-head" data-bs-toggle="collapse" data-bs-target="#stud-{{ fam.id }}-{{ st.id }}" aria-expanded="false" role="button">
             <span class="monthly-student-head__chev"><i class="bi bi-chevron-down"></i></span>
-            <i class="bi bi-mortarboard-fill text-primary me-2" aria-hidden="true"></i>
-            <span class="monthly-student-head__name">{{ st.name }}</span>
-            <span class="monthly-student-head__sum small text-muted ms-2">
-              חיוב ‎₪{{ st.charge_sum }} · שולם ‎₪{{ st.paid_sum }} · {{ st.lesson_count }} שיעורים
-            </span>
+            <div class="monthly-student-head__main">
+              <i class="bi bi-mortarboard-fill text-primary me-2" aria-hidden="true"></i>
+              <span class="monthly-student-head__name">{{ st.name }}</span>
+              <span class="monthly-student-head__sum text-muted mr-st-line" data-mr-st="{{ st.id }}">
+                <span class="monthly-student-head__sep">·</span> חיוב ‎₪{{ st.charge_sum }}
+                <span class="monthly-student-head__sep">·</span> שולם ‎₪{{ st.paid_sum }}
+                <span class="monthly-student-head__sep">·</span> {{ st.lesson_count }} שיעורים
+              </span>
+            </div>
           </div>
           <div id="stud-{{ fam.id }}-{{ st.id }}" class="collapse">
             <div class="table-responsive monthly-lesson-table-wrap">

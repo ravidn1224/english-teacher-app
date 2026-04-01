@@ -106,14 +106,12 @@
                 </div>
                 <input type="number" class="form-control" id="detLessonCharge" min="0" step="1" inputmode="numeric" autocomplete="off" />
               </div>
-              <div id="detFamilyBalanceBadgeWrap" class="mb-2 min-h-badge"></div>
               <div id="detSuggestedPayWrap" class="mb-2 d-none">
-                <span class="small text-muted me-2">לתשלום מוצע:</span>
+                <span class="small text-muted me-2">תשלום מוצע:</span>
                 <span id="detSuggestedPayBadge" class="badge rounded-pill bg-light text-dark border fw-semibold"></span>
               </div>
               <div id="detQuickPayRow" class="d-flex flex-wrap gap-2 mb-2 d-none" role="group" aria-label="סכומים מהירים">
-                <button type="button" class="btn btn-sm btn-outline-secondary det-quick-pay" data-amt-suggest="1">לפי הצעה</button>
-                <button type="button" class="btn btn-sm btn-outline-secondary det-quick-pay" data-amt-charge="1">לפי חיוב</button>
+                <button type="button" class="btn btn-sm btn-outline-secondary det-quick-pay" data-amt-suggest="1">לפי תשלום מוצע</button>
                 <button type="button" class="btn btn-sm btn-outline-secondary det-quick-pay" data-amt-zero="1">₪0</button>
               </div>
               <div id="detGroupLessonRow" class="det-group-lesson-row mt-2 mb-0">
@@ -259,8 +257,14 @@
               </p>
               <p class="text-muted small mb-0 mt-2 d-none" id="lessonRecurHint">
                 נוסף ל־«שיעורים חוזרים» של התלמיד בדף הפרופיל (אותה טבלה). <strong>יום השבוע</strong> נקבע לפי התאריך שבחרת למעלה.
+                <strong>תאריך תחילת חזרות</strong> קובע מאיזה יום המופעים יופיעו בלוח (לא לפניו).
                 שדה ההערות למטה <strong>לא</strong> נשמר לשיעור קבוע — רק שעות ויום.
               </p>
+              <div class="d-none mt-2" id="lessonRecurStartWrap">
+                <label class="form-label small fw-semibold mb-1" for="lessonRecurStartDate">תאריך תחילת חזרות</label>
+                <input type="date" class="form-control" id="lessonRecurStartDate" autocomplete="off" />
+                <p class="text-muted small mb-0 mt-1">מופעים בלוח מהתאריך הזה ואילך בלבד.</p>
+              </div>
               <div class="d-none mt-2 p-2 rounded border bg-light" id="lessonCustomRecurWrap">
                 <label class="form-label small fw-semibold mb-1" for="lessonCustomFreq">תדירות מותאמת</label>
                 <select class="form-select form-select-sm mb-2" id="lessonCustomFreq">
