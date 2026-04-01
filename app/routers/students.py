@@ -1,5 +1,6 @@
 import re
 from collections import defaultdict
+from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -8,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from ..database import get_db
 from .. import models
+from .. import family_utils
 from ..templating import templates
 
 router = APIRouter(prefix="/students", tags=["students"])
@@ -163,6 +165,8 @@ def create_student(
         notes=notes,
     )
     db.add(student)
+    db.flush()
+    family_utils.get_or_create_family_for_student(db, student, models)
     db.commit()
     db.refresh(student)
     return RedirectResponse(url=f"/students/{student.id}", status_code=303)
@@ -191,8 +195,21 @@ def student_detail(request: Request, student_id: int, db: Session = Depends(get_
             "student": student,
             "lessons": lessons,
             "day_names": DAY_NAMES,
+            "default_recur_start": date.today().isoformat(),
         },
     )
+
+
+@router.post("/{student_id}/lessons/{lesson_id}/delete")
+def delete_student_lesson(student_id: int, lesson_id: int, db: Session = Depends(get_db)):
+    from .lessons import delete_lesson_record
+
+    lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
+    if not lesson or lesson.student_id != student_id:
+        raise HTTPException(status_code=404, detail="שיעור לא נמצא")
+    delete_lesson_record(db, lesson)
+    db.commit()
+    return RedirectResponse(url=f"/students/{student_id}", status_code=303)
 
 
 @router.get("/{student_id}/edit", response_class=HTMLResponse)
@@ -224,6 +241,8 @@ def update_student(
     student.parent_phone = parent_phone
     student.default_price = default_price
     student.notes = notes
+    if not student.family_id:
+        family_utils.get_or_create_family_for_student(db, student, models)
     db.commit()
     return RedirectResponse(url=f"/students/{student_id}", status_code=303)
 
@@ -246,17 +265,26 @@ def add_schedule(
     day_of_week: int = Form(...),
     start_time: str = Form(...),
     end_time: str = Form(...),
+    recurring_start_date: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     from datetime import time as dt_time
     start = dt_time.fromisoformat(start_time)
     end = dt_time.fromisoformat(end_time)
+    rs_raw = (recurring_start_date or "").strip()
+    rs_d: Optional[date] = None
+    if rs_raw and len(rs_raw) >= 10:
+        try:
+            rs_d = date.fromisoformat(rs_raw[:10])
+        except ValueError:
+            rs_d = None
     sched = models.RegularSchedule(
         student_id=student_id,
         day_of_week=day_of_week,
         start_time=start,
         end_time=end,
         frequency="weekly",
+        recurring_start_date=rs_d,
     )
     db.add(sched)
     db.commit()

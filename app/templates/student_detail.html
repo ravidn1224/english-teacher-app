@@ -76,7 +76,7 @@
           <div class="table-responsive mb-3">
             <table class="table table-sm table-bordered align-middle mb-0 small">
               <thead class="table-light">
-                <tr><th>יום</th><th>תדירות</th><th>התחלה</th><th>סיום</th><th class="text-center" style="width:3rem"></th></tr>
+                <tr><th>יום</th><th>תדירות</th><th>מתאריך</th><th>התחלה</th><th>סיום</th><th class="text-center" style="width:3rem"></th></tr>
               </thead>
               <tbody>
                 {% for sched in student.schedules %}
@@ -84,6 +84,7 @@
                 <tr>
                   <td>{% if sf == 'monthly' %}יום {{ sched.day_of_month or '—' }} בחודש{% else %}יום {{ day_names[sched.day_of_week] }}{% endif %}</td>
                   <td>{% if sf == 'biweekly' %}דו-שבועי{% elif sf == 'monthly' %}חודשי{% else %}שבועי{% endif %}</td>
+                  <td>{% if sched.recurring_start_date %}{{ sched.recurring_start_date.strftime('%d/%m/%Y') }}{% else %}—{% endif %}</td>
                   <td>{{ sched.start_time.strftime('%H:%M') }}</td>
                   <td>{{ sched.end_time.strftime('%H:%M') }}</td>
                   <td class="text-center p-1">
@@ -111,6 +112,11 @@
                 <option value="{{ loop.index0 }}">יום {{ name }}</option>
                 {% endfor %}
               </select>
+            </div>
+            <div class="mb-2">
+              <label class="form-label small mb-0" for="recurStartDate">תאריך תחילת חזרות</label>
+              <input type="date" class="form-control form-control-sm" id="recurStartDate" name="recurring_start_date" value="{{ default_recur_start }}" />
+              <p class="text-muted small mb-0 mt-1">מופעים בלוח מהתאריך הזה ואילך בלבד.</p>
             </div>
             <div class="row g-2 mb-2">
               <div class="col-6">
@@ -150,6 +156,7 @@
                   <th>סטטוס</th>
                   <th>תשלום</th>
                   <th>הערות</th>
+                  <th class="text-center" style="width:3rem" aria-label="מחיקה"></th>
                 </tr>
               </thead>
               <tbody>
@@ -203,6 +210,14 @@
                     {% endif %}
                   </td>
                   <td class="text-muted">{{ lesson.notes or "" }}</td>
+                  <td class="text-center p-1 align-middle">
+                    <form method="post" action="/students/{{ student.id }}/lessons/{{ lesson.id }}/delete" class="d-inline"
+                          onsubmit="return confirm('למחוק את השיעור מההיסטוריה? פעולה זו מעדכנת גם את הלוח ואת יתרת המשפחה.');">
+                      <button type="submit" class="btn btn-outline-danger btn-sm py-0 px-1" aria-label="מחק שיעור" title="מחק שיעור">
+                        <i class="bi bi-trash"></i>
+                      </button>
+                    </form>
+                  </td>
                 </tr>
                 {% endfor %}
               </tbody>
