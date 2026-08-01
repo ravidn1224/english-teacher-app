@@ -123,20 +123,31 @@
         {% for student in fam.members %}
         {% set ep = student.default_price if student.default_price > 0 else global_default_individual %}
         {% set eg = student.default_price_group if student.default_price_group > 0 else global_default_group %}
-        {% set current_price = eg if student.lesson_type == 'group' else ep %}
+        {% set has_group = student_has_group_lessons(student) %}
+        {% set has_private = student_has_private_lessons(student) %}
         <div class="col-12 col-sm-6 col-md-4 col-lg-3 col-xl-3 col-xxl-2">
           <div class="student-card h-100 student-card--in-family">
             <div class="d-flex justify-content-between align-items-start gap-1">
               <div class="min-w-0 flex-grow-1">
                 <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
-                {% if student.lesson_type == 'group' %}
-                <span class="badge rounded-pill text-bg-secondary mt-1" style="font-size:0.7rem">שיעור קבוצתי</span>
+                <span class="student-track-badge student-track-badge--{{ student.lesson_type if student.lesson_type in ['individual', 'group', 'both'] else 'individual' }}">
+                  {{ student_lesson_type_label(student) }}
+                </span>
+              </div>
+              <div class="student-price-stack flex-shrink-0" title="{% if has_private and has_group %}פרטי {{ ep }}₪ · קבוצתי {{ eg }}₪{% elif has_group %}קבוצתי {{ eg }}₪{% else %}פרטי {{ ep }}₪{% endif %}">
+                {% if has_private %}
+                <span class="price-tag">
+                  <span class="price-tag__amount">{{ ep }}₪</span>
+                  <span class="price-tag__suffix">פרטי</span>
+                </span>
+                {% endif %}
+                {% if has_group %}
+                <span class="price-tag price-tag--group">
+                  <span class="price-tag__amount">{{ eg }}₪</span>
+                  <span class="price-tag__suffix">קבוצתי</span>
+                </span>
                 {% endif %}
               </div>
-              <span class="price-tag flex-shrink-0 text-end" title="פרטי {{ ep }}₪ · קבוצה {{ eg }}₪">
-                <span class="price-tag__amount">{{ current_price }}₪</span>
-                <span class="price-tag__suffix d-block small text-muted" style="font-size:0.7rem">{% if student.lesson_type == 'group' %}קבוצתי{% else %}פרטי{% endif %}</span>
-              </span>
             </div>
             {% if student.notes %}
             <div class="info-row text-truncate" title="{{ student.notes|e }}">
@@ -169,20 +180,31 @@
     {% for student in fam.members %}
     {% set ep = student.default_price if student.default_price > 0 else global_default_individual %}
     {% set eg = student.default_price_group if student.default_price_group > 0 else global_default_group %}
-    {% set current_price = eg if student.lesson_type == 'group' else ep %}
+    {% set has_group = student_has_group_lessons(student) %}
+    {% set has_private = student_has_private_lessons(student) %}
     <div class="col-12 col-sm-6 col-md-4 col-lg-3 col-xl-3 col-xxl-2">
       <div class="student-card h-100">
         <div class="d-flex justify-content-between align-items-start gap-1">
           <div class="min-w-0 flex-grow-1">
             <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
-            {% if student.lesson_type == 'group' %}
-            <span class="badge rounded-pill text-bg-secondary mt-1" style="font-size:0.7rem">שיעור קבוצתי</span>
+            <span class="student-track-badge student-track-badge--{{ student.lesson_type if student.lesson_type in ['individual', 'group', 'both'] else 'individual' }}">
+              {{ student_lesson_type_label(student) }}
+            </span>
+          </div>
+          <div class="student-price-stack flex-shrink-0" title="{% if has_private and has_group %}פרטי {{ ep }}₪ · קבוצתי {{ eg }}₪{% elif has_group %}קבוצתי {{ eg }}₪{% else %}פרטי {{ ep }}₪{% endif %}">
+            {% if has_private %}
+            <span class="price-tag">
+              <span class="price-tag__amount">{{ ep }}₪</span>
+              <span class="price-tag__suffix">פרטי</span>
+            </span>
+            {% endif %}
+            {% if has_group %}
+            <span class="price-tag price-tag--group">
+              <span class="price-tag__amount">{{ eg }}₪</span>
+              <span class="price-tag__suffix">קבוצתי</span>
+            </span>
             {% endif %}
           </div>
-          <span class="price-tag flex-shrink-0 text-end" title="פרטי {{ ep }}₪ · קבוצה {{ eg }}₪">
-            <span class="price-tag__amount">{{ current_price }}₪</span>
-            <span class="price-tag__suffix d-block small text-muted" style="font-size:0.7rem">{% if student.lesson_type == 'group' %}קבוצתי{% else %}פרטי{% endif %}</span>
-          </span>
         </div>
         {% if student.parent_name or student.parent_phone %}
         <div class="info-row d-flex flex-wrap align-items-center gap-1" style="min-width:0" title="{% if student.parent_name %}{{ student.parent_name|e }}{% endif %}{% if student.parent_phone %} {{ student.parent_phone }}{% endif %}">

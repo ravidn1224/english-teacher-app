@@ -25,7 +25,11 @@ let detailModal;
 let editModal;
 let groupPickModal;
 let recurringMoveModal;
+let recurringDeleteModal;
 let pendingRecurringDragChoice = null;
+let pendingRecurringDeleteChoice = null;
+let calendarUndoToastTimer = null;
+let lastCalendarDeleteUndoToken = null;
 /** FullCalendar composite event while the group student picker is open */
 let groupPickContainerEvent = null;
 
@@ -241,6 +245,96 @@ function chooseRecurringDragScope(scope) {
   if (resolve) resolve(scope === 'future' ? 'future' : 'one');
 }
 
+function askRecurringDeleteScope() {
+  if (!recurringDeleteModal) return Promise.resolve('cancel');
+  return new Promise(function (resolve) {
+    pendingRecurringDeleteChoice = resolve;
+    recurringDeleteModal.show();
+  });
+}
+
+function chooseRecurringDeleteScope(scope) {
+  const resolve = pendingRecurringDeleteChoice;
+  pendingRecurringDeleteChoice = null;
+  if (recurringDeleteModal) recurringDeleteModal.hide();
+  if (resolve) resolve(scope === 'future' ? 'future' : 'one');
+}
+window.chooseRecurringDeleteScope = chooseRecurringDeleteScope;
+
+async function deleteLessonByIdWithScope(lessonId, options) {
+  const opts = options || {};
+  const fd = new FormData();
+  let scope = 'one';
+  if (opts.recurring === true) {
+    scope = await askRecurringDeleteScope();
+    if (scope === 'cancel') return { ok: false, cancelled: true };
+  } else if (
+    !confirm(
+      'להסיר את השיעור מהלוח?\n\nשיעור חד־פעמי יימחק לגמרי.'
+    )
+  ) {
+    return { ok: false, cancelled: true };
+  }
+  fd.append('scope', scope);
+  const res = await fetch(`/api/lessons/${lessonId}/delete`, { method: 'POST', body: fd });
+  let data = {};
+  if (res.ok) {
+    try {
+      data = await res.json();
+    } catch (e) {
+      data = {};
+    }
+  }
+  return { ok: res.ok, cancelled: false, response: res, data: data, scope: scope };
+}
+
+function hideCalendarUndoToast() {
+  const toast = document.getElementById('calendarUndoToast');
+  if (toast) toast.classList.add('d-none');
+  if (calendarUndoToastTimer) {
+    clearTimeout(calendarUndoToastTimer);
+    calendarUndoToastTimer = null;
+  }
+}
+window.hideCalendarUndoToast = hideCalendarUndoToast;
+
+function showCalendarDeleteToast(result) {
+  const toast = document.getElementById('calendarUndoToast');
+  const text = document.getElementById('calendarUndoToastText');
+  const btn = document.getElementById('calendarUndoToastBtn');
+  if (!toast || !text || !btn) return;
+  const token = result && result.data ? result.data.undo_token : null;
+  lastCalendarDeleteUndoToken = token || null;
+  text.textContent = result && result.scope === 'future'
+    ? 'השיעור והשיעורים הבאים נמחקו'
+    : 'השיעור נמחק';
+  btn.classList.toggle('d-none', !lastCalendarDeleteUndoToken);
+  toast.classList.remove('d-none');
+  if (calendarUndoToastTimer) clearTimeout(calendarUndoToastTimer);
+  calendarUndoToastTimer = setTimeout(function () {
+    hideCalendarUndoToast();
+  }, 10000);
+}
+
+async function undoLastCalendarDelete() {
+  if (!lastCalendarDeleteUndoToken) return;
+  const token = lastCalendarDeleteUndoToken;
+  lastCalendarDeleteUndoToken = null;
+  const fd = new FormData();
+  fd.append('token', token);
+  const res = await fetch('/api/lessons/delete/undo', { method: 'POST', body: fd });
+  if (res.ok) {
+    hideCalendarUndoToast();
+    calendar.refetchEvents();
+  } else {
+    const text = document.getElementById('calendarUndoToastText');
+    const btn = document.getElementById('calendarUndoToastBtn');
+    if (text) text.textContent = 'לא ניתן לבטל את המחיקה';
+    if (btn) btn.classList.add('d-none');
+  }
+}
+window.undoLastCalendarDelete = undoLastCalendarDelete;
+
 function groupMemberProps(member) {
   return (member && member.extendedProps) || {};
 }
@@ -398,9 +492,11 @@ async function persistLessonAfterDragResize(info) {
       const price = p.price != null && p.price !== '' ? Number(p.price) : 0;
       fd.append('price', String(Number.isFinite(price) ? price : 0));
       fd.append('notes', p.notes != null ? String(p.notes) : '');
+      const recurLessonType = String(p.studentLessonType || '').toLowerCase();
       const grpRecur =
         p.isGroupLesson === true ||
-        String(p.studentLessonType || '').toLowerCase() === 'group';
+        recurLessonType === 'group' ||
+        recurLessonType === 'both';
       fd.append('is_group_lesson', grpRecur ? 'true' : 'false');
       res = await fetch('/api/lessons/confirm-recurring', { method: 'POST', body: fd });
     }
@@ -460,6 +556,27 @@ function lessonEvTagHtml(p, compact) {
   if (att === 'no_show') return `<span class="${cls}">✕ לא הגיע/ה</span>`;
   if (att === 'arrived') return `<span class="${cls}">הגיע/ה · לא שולם</span>`;
   return `<span class="${cls}">ממתין לסימון</span>`;
+}
+
+function groupPickerStudentStatus(p) {
+  p = p || {};
+  const att = p.attendance || 'expected';
+  if (p.status === 'cancelled') {
+    return { label: 'בוטל', cls: 'is-cancelled' };
+  }
+  if (att === 'no_show') {
+    return { label: 'לא הגיע/ה', cls: 'is-no-show' };
+  }
+  if (att === 'arrived' && p.isPaid === true) {
+    return { label: 'הגיע/ה - שולם', cls: 'is-arrived-paid' };
+  }
+  if (att === 'arrived') {
+    return { label: 'הגיע/ה - לא שולם', cls: 'is-arrived-unpaid' };
+  }
+  if (p.isPaid === true) {
+    return { label: 'שולם', cls: 'is-paid' };
+  }
+  return { label: 'ממתין לסימון', cls: 'is-waiting' };
 }
 
 /** Last/first name from a merged member or raw calendar row (API may send studentLastName). */
@@ -536,12 +653,18 @@ function openGroupLessonPicker(containerEvent) {
     timeEl.textContent = `${fmtTime(containerEvent.start)} – ${fmtTime(endD)}`;
   }
   members.forEach(function (m) {
+    const mp = (m && m.extendedProps) || {};
+    const state = groupPickerStudentStatus(mp);
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className =
-      'list-group-item list-group-item-action text-start py-2 px-3 group-pick-row';
+      `list-group-item list-group-item-action text-start py-2 px-3 group-pick-row ${state.cls}`;
     const line = document.createElement('div');
     line.className = 'group-pick-name-line';
+    const status = document.createElement('span');
+    status.className = 'group-pick-status';
+    status.textContent = state.label;
+    line.appendChild(status);
     const last = document.createElement('span');
     last.className = 'group-pick-last';
     last.textContent = memberLastName(m) || m.title || '';
@@ -661,7 +784,46 @@ function buildSyntheticDetailEventFromMember(containerEvent, member) {
     start: containerEvent.start,
     end: end,
     allDay: !!containerEvent.allDay,
-    extendedProps: Object.assign({}, member.extendedProps || {}),
+    extendedProps: Object.assign({}, member.extendedProps || {}, {
+      isGroupLesson: true,
+    }),
+  };
+}
+
+function buildMaterializedDetailEvent(originalEvent, data) {
+  const p = (originalEvent && originalEvent.extendedProps) || {};
+  const startDate = data && data.lesson_date ? String(data.lesson_date) : toInputDate(originalEvent.start);
+  const startTime = data && data.start_time ? String(data.start_time).slice(0, 5) : toInputTime(originalEvent.start);
+  const endTime = data && data.end_time ? String(data.end_time).slice(0, 5) : toInputTime(getEventEnd(originalEvent));
+  const start = new Date(`${startDate}T${startTime}`);
+  const end = new Date(`${startDate}T${endTime}`);
+  const realProps = Object.assign({}, p, {
+    studentId: data && data.student_id != null ? data.student_id : p.studentId,
+    status: (data && data.status) || 'scheduled',
+    attendance: (data && data.attendance) || 'expected',
+    isPaid: data ? data.is_paid === true : false,
+    paidAmount: data && data.paid_amount != null ? data.paid_amount : null,
+    paymentMethod: (data && data.payment_method) || '',
+    paymentNote: (data && data.payment_note) || '',
+    notes: (data && data.notes) || '',
+    price: data && data.price != null ? data.price : p.price,
+    isRecurring: false,
+    isFromRecurringSchedule: true,
+    isGroupLesson:
+      (data && data.is_group_lesson === true) ||
+      p.isGroupLesson === true ||
+      String(p.studentLessonType || '').toLowerCase() === 'group',
+  });
+  return {
+    id: data && data.id != null ? String(data.id) : String(originalEvent.id || ''),
+    title: originalEvent.title || '',
+    start,
+    end,
+    allDay: false,
+    extendedProps: realProps,
+    setExtendedProp(name, value) {
+      this.extendedProps[name] = value;
+    },
   };
 }
 
@@ -1261,7 +1423,8 @@ function syncLessonModalGroupFromStudent(rec) {
     cb.checked = false;
     return;
   }
-  cb.checked = String(rec.lesson_type || 'individual').toLowerCase() === 'group';
+  const lessonType = String(rec.lesson_type || 'individual').toLowerCase();
+  cb.checked = lessonType === 'group' || lessonType === 'both';
 }
 
 function lessonStudentDropdownOpen(open) {
@@ -1781,6 +1944,16 @@ document.addEventListener('DOMContentLoaded', async function () {
       resolve('cancel');
     });
   }
+  const recurringDeleteEl = document.getElementById('recurringDeleteModal');
+  if (recurringDeleteEl) {
+    recurringDeleteModal = new bootstrap.Modal(recurringDeleteEl);
+    recurringDeleteEl.addEventListener('hidden.bs.modal', function () {
+      if (!pendingRecurringDeleteChoice) return;
+      const resolve = pendingRecurringDeleteChoice;
+      pendingRecurringDeleteChoice = null;
+      resolve('cancel');
+    });
+  }
   document.getElementById('detailModal').addEventListener('hidden.bs.modal', function () {
     activeLessonDbId = null;
   });
@@ -1992,14 +2165,12 @@ document.addEventListener('DOMContentLoaded', async function () {
       }
 
       const name = info.event.title;
-      const tag = lessonEvTagHtml(p, false);
 
       return {
         html: `<div class="ev-inner" data-event-id="${escAttr(info.event.id)}">
           <div class="ev-time">${time}</div>
           <div class="ev-title-row">
             <div class="ev-name">${escHtml(name || '')}</div>
-            ${tag}
           </div>
         </div>`,
       };
@@ -2214,6 +2385,11 @@ async function openDetailCard(event, options) {
       fd.append('slot_date', toInputDate(event.start));
       fd.append('start_time', toInputTime(event.start));
       fd.append('end_time', toInputTime(getEventEnd(event)));
+      const recurringLessonType = String(p0.studentLessonType || '').toLowerCase();
+      const materializeAsGroup =
+        p0.isGroupLesson === true ||
+        recurringLessonType === 'group';
+      fd.append('is_group_lesson', materializeAsGroup ? 'true' : 'false');
       const res = await fetch('/api/lessons/materialize-from-slot', { method: 'POST', body: fd });
       if (!res.ok) throw new Error('materialize failed');
       const data = await res.json();
@@ -2227,17 +2403,15 @@ async function openDetailCard(event, options) {
       }
       let evObj = calendar.getEventById(String(data.id));
       if (!evObj) evObj = calendar.getEventById(Number(data.id));
-      if (evObj) {
-        await openDetailCard(evObj, {
-          skipMaterialize: true,
-          scrollToPayment: !!options.scrollToPayment,
-        });
-        return;
-      }
-      alert('השיעור נוצר — רענני את הלוח אם הכרטיס לא נפתח.');
+      if (!evObj) evObj = buildMaterializedDetailEvent(event, data);
+      await openDetailCard(evObj, {
+        skipMaterialize: true,
+        scrollToPayment: !!options.scrollToPayment,
+      });
+      return;
     } catch (err) {
       console.warn(err);
-      alert('לא ניתן לפתוח את השיעור. נסי שוב.');
+      alert('לא ניתן לפתוח את פרטי השיעור. נסי שוב.');
     }
     stashScheduleContext = null;
     return;
@@ -2717,17 +2891,14 @@ async function detDeleteLesson() {
     alert('מזהה שיעור לא תקין.');
     return;
   }
-  if (
-    !confirm(
-      'להסיר את המופע הזה מהלוח?\n\nאם זה מתוך שיעור חוזר — רק התאריך הזה ייעלם והחזרות ימשיכו.\nשיעור חד־פעמי יימחק לגמרי.'
-    )
-  ) {
-    return;
-  }
-  const res = await fetch(`/api/lessons/${lessonId}/delete`, { method: 'POST' });
-  if (res.ok) {
+  const ep = getDetailExtendedProps();
+  const recurring = ep.isRecurring === true || ep.isFromRecurringSchedule === true || ep.scheduleId != null;
+  const result = await deleteLessonByIdWithScope(lessonId, { recurring: recurring });
+  if (result.cancelled) return;
+  if (result.ok) {
     detailModal.hide();
     calendar.refetchEvents();
+    showCalendarDeleteToast(result);
   } else {
     alert('לא ניתן למחוק. נסי שוב.');
   }
@@ -2871,7 +3042,8 @@ function openFullEditModal(event, scheduleCtx) {
   const grpModal = document.getElementById('lessonModalIsGroup');
   if (grpModal) {
     if (isVirtualRecurring) {
-      grpModal.checked = String(p.studentLessonType || '').toLowerCase() === 'group';
+      const detailLessonType = String(p.studentLessonType || '').toLowerCase();
+      grpModal.checked = detailLessonType === 'group' || detailLessonType === 'both';
     } else {
       grpModal.checked = p.isGroupLesson === true;
     }
@@ -3021,7 +3193,7 @@ async function saveLesson() {
         }
         res = await fetch(`/api/lessons/recurring-schedule/${linkedSched}/delete`, { method: 'POST' });
         if (!res.ok) {
-          alert('השיעור נוצר אך לא ניתן היה להסיר את החזרות. נסי מחיקת לוח קבוע בפרופיל התלמיד.');
+          alert('השיעור נשמר, אבל לא ניתן היה להסיר את החזרות. נסי למחוק את הלוח הקבוע מכרטיס התלמיד/ה.');
           return;
         }
       } else {
@@ -3204,17 +3376,16 @@ function setPaid(paid) {
 async function deleteLesson() {
   const lessonId = document.getElementById('lessonId').value;
   if (!lessonId) return;
-  if (
-    !confirm(
-      'להסיר את המופע מהלוח?\n\nשיעור חוזר — רק התאריך הזה; שיעור חד־פעמי — מחיקה מלאה.'
-    )
-  ) {
-    return;
-  }
-  const res = await fetch(`/api/lessons/${lessonId}/delete`, { method: 'POST' });
-  if (res.ok) {
+  const linkedSched = document.getElementById('lessonLinkedScheduleId').value || '';
+  const ep = (activeEvent && activeEvent.extendedProps) || {};
+  const result = await deleteLessonByIdWithScope(lessonId, {
+    recurring: linkedSched !== '' || ep.isFromRecurringSchedule === true || ep.scheduleId != null,
+  });
+  if (result.cancelled) return;
+  if (result.ok) {
     editModal.hide();
     calendar.refetchEvents();
+    showCalendarDeleteToast(result);
   } else {
     alert('לא ניתן למחוק. נסי שוב.');
   }

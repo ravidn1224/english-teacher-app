@@ -4,8 +4,10 @@ from sqlalchemy.orm import Session, joinedload
 from pathlib import Path
 import calendar as cal_std
 import json
+import secrets
 from datetime import date, datetime, time as dt_time, timedelta
-from typing import Optional, Set
+from types import SimpleNamespace
+from typing import Optional, Set, Any
 
 from ..database import get_db
 from .. import models
@@ -19,6 +21,7 @@ from ..app_settings import (
 from ..templating import templates
 
 router = APIRouter(tags=["lessons"])
+RECENT_DELETE_UNDO: dict[str, dict[str, Any]] = {}
 
 
 def _python_weekday_to_app_day(python_weekday: int) -> int:
@@ -86,7 +89,7 @@ def _lesson_is_partial_payment(lesson: models.Lesson) -> bool:
     return p < c
 
 
-def _lesson_event_colors(lesson: models.Lesson) -> tuple[str, str]:
+def _lesson_event_colors(lesson: models.Lesson, is_from_recurring_schedule: bool = False) -> tuple[str, str]:
     """(background_hex, text_hex) — palette aligned with app teal-emerald brand."""
     if lesson.status == "cancelled":
         return ("#94A3B8", "#FFFFFF")
@@ -98,6 +101,8 @@ def _lesson_event_colors(lesson: models.Lesson) -> tuple[str, str]:
     if att == "no_show":
         return ("#6B7280", "#FFFFFF")
     if att == "expected":
+        if is_from_recurring_schedule:
+            return ("#14B8A6", "#FFFFFF")
         return ("#CCFBF1", "#134E4A")
     # arrived — לא שולם (כולל סכום 0): אדום בלוח
     if att == "arrived" and not lesson.is_paid:
@@ -254,17 +259,23 @@ def _recompute_family_balance_from_lessons(db: Session, family_id: int) -> int:
 
 def _lesson_matches_any_recurring_slot(lesson: models.Lesson, db: Session) -> bool:
     """True if a RegularSchedule would emit this occurrence (same student, date, start, end)."""
+    return bool(_matching_recurring_schedules_for_lesson(lesson, db))
+
+
+def _matching_recurring_schedules_for_lesson(lesson: models.Lesson, db: Session) -> list[models.RegularSchedule]:
+    """RegularSchedule rows that emit the same student/date/time as this concrete lesson."""
     schedules = (
         db.query(models.RegularSchedule)
         .filter(models.RegularSchedule.student_id == lesson.student_id)
         .all()
     )
+    matches = []
     for sched in schedules:
         if not _schedule_matches_date(sched, lesson.lesson_date):
             continue
         if sched.start_time == lesson.start_time and sched.end_time == lesson.end_time:
-            return True
-    return False
+            matches.append(sched)
+    return matches
 
 
 def _calendar_skip_placeholder(lesson: models.Lesson) -> bool:
@@ -273,6 +284,52 @@ def _calendar_skip_placeholder(lesson: models.Lesson) -> bool:
         return False
     n = (lesson.notes or "").strip()
     return n.startswith(HIDDEN_RECURRING_PLACEHOLDER_PREFIXES)
+
+
+def _clear_matching_hidden_recurring_placeholders(
+    db: Session,
+    *,
+    student_id: int,
+    day_of_week: int,
+    start_time: dt_time,
+    end_time: dt_time,
+    frequency: str = "weekly",
+    anchor_date: Optional[date] = None,
+    day_of_month: Optional[int] = None,
+    recurring_start_date: Optional[date] = None,
+    recurring_end_date: Optional[date] = None,
+) -> int:
+    """Remove stale hidden rows that would otherwise keep a newly saved recurrence invisible."""
+    rule = SimpleNamespace(
+        day_of_week=day_of_week,
+        start_time=start_time,
+        end_time=end_time,
+        frequency=(frequency or "weekly").strip().lower(),
+        anchor_date=anchor_date,
+        day_of_month=day_of_month,
+        recurring_start_date=recurring_start_date,
+        recurring_end_date=recurring_end_date,
+    )
+    query = db.query(models.Lesson).filter(
+        models.Lesson.student_id == student_id,
+        models.Lesson.status == "cancelled",
+        models.Lesson.start_time == start_time,
+        models.Lesson.end_time == end_time,
+    )
+    if recurring_start_date is not None:
+        query = query.filter(models.Lesson.lesson_date >= recurring_start_date)
+    if recurring_end_date is not None:
+        query = query.filter(models.Lesson.lesson_date <= recurring_end_date)
+
+    removed = 0
+    for lesson in query.all():
+        if not _calendar_skip_placeholder(lesson):
+            continue
+        if not _schedule_matches_date(rule, lesson.lesson_date):
+            continue
+        db.delete(lesson)
+        removed += 1
+    return removed
 
 
 def _monday_of(d: date) -> date:
@@ -372,7 +429,8 @@ def get_lessons_json(
     for lesson in real_lessons:
         if _calendar_skip_placeholder(lesson):
             continue
-        bg, tx = _lesson_event_colors(lesson)
+        matching_schedules = _matching_recurring_schedules_for_lesson(lesson, db)
+        bg, tx = _lesson_event_colors(lesson, bool(matching_schedules))
         fid = getattr(lesson.student, "family_id", None)
         if fid is not None:
             bal_disp = bal_by_fid[fid]
@@ -398,6 +456,8 @@ def get_lessons_json(
                 "paymentNote": getattr(lesson, "payment_note", None) or "",
                 "notes": lesson.notes or "",
                 "isRecurring": False,
+                "isFromRecurringSchedule": bool(matching_schedules),
+                "scheduleId": matching_schedules[0].id if matching_schedules else None,
                 "studentBalance": bal_disp,
                 "familyBalance": bal_disp,
                 "familyId": getattr(lesson.student, "family_id", None),
@@ -566,12 +626,33 @@ def materialize_from_slot_api(
     slot_date: str = Form(...),
     start_time: str = Form(...),
     end_time: Optional[str] = Form(None),
+    is_group_lesson: Optional[str] = Form(None),
     db: Session = Depends(get_db),
 ):
     """Turn a calendar recurring placeholder into a real Lesson row (attendance / payment UI)."""
+    def _materialized_payload(lesson: models.Lesson, existed: bool) -> dict:
+        return {
+            "id": lesson.id,
+            "existed": existed,
+            "student_id": lesson.student_id,
+            "lesson_date": lesson.lesson_date.isoformat(),
+            "start_time": lesson.start_time.isoformat(timespec="minutes"),
+            "end_time": lesson.end_time.isoformat(timespec="minutes"),
+            "price": int(lesson.price or 0),
+            "status": lesson.status,
+            "attendance": lesson.attendance,
+            "is_paid": bool(lesson.is_paid),
+            "paid_amount": lesson.paid_amount,
+            "payment_method": lesson.payment_method or "",
+            "payment_note": getattr(lesson, "payment_note", None) or "",
+            "notes": lesson.notes or "",
+            "is_group_lesson": bool(getattr(lesson, "is_group_lesson", False)),
+        }
+
     d = date.fromisoformat(str(slot_date).strip()[:10])
     st = _parse_time_loose(start_time)
     en = _end_or_default(d, st, end_time)
+    is_group = str(is_group_lesson or "").strip().lower() in ("true", "1", "yes")
     row = (
         db.query(models.Lesson)
         .filter(
@@ -583,12 +664,20 @@ def materialize_from_slot_api(
         .first()
     )
     if row:
-        return JSONResponse(content={"id": row.id, "existed": True})
+        if is_group and not getattr(row, "is_group_lesson", False):
+            row.is_group_lesson = True
+            if not getattr(row, "is_paid", False):
+                student_for_price = row.student or db.query(models.Student).filter(models.Student.id == student_id).first()
+                if student_for_price:
+                    row.price = effective_student_default_price_for_lesson(db, student_for_price, True)
+            db.commit()
+            db.refresh(row)
+        return JSONResponse(content=_materialized_payload(row, True))
     student = db.query(models.Student).filter(models.Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="תלמיד לא נמצא")
     family_utils.get_or_create_family_for_student(db, student, models)
-    price = effective_student_default_price(db, student)
+    price = effective_student_default_price_for_lesson(db, student, is_group)
     lesson = models.Lesson(
         student_id=student_id,
         lesson_date=d,
@@ -602,11 +691,12 @@ def materialize_from_slot_api(
         payment_method="",
         payment_note="",
         notes="",
+        is_group_lesson=is_group,
     )
     db.add(lesson)
     db.commit()
     db.refresh(lesson)
-    return JSONResponse(content={"id": lesson.id, "existed": False})
+    return JSONResponse(content=_materialized_payload(lesson, False))
 
 
 @router.get("/api/students-list")
@@ -763,6 +853,17 @@ def add_recurring_schedule_api(
         recurring_start_date=recur_start,
     )
     db.add(sched)
+    _clear_matching_hidden_recurring_placeholders(
+        db,
+        student_id=student_id,
+        day_of_week=day_of_week,
+        start_time=st,
+        end_time=en,
+        frequency=freq,
+        anchor_date=anchor_d,
+        day_of_month=dom,
+        recurring_start_date=recur_start,
+    )
     db.commit()
     db.refresh(sched)
     return JSONResponse(content={"id": sched.id, "status": "ok"})
@@ -828,6 +929,18 @@ def update_recurring_schedule_api(
         sched.anchor_date = None
         sched.day_of_month = dom
     sched.recurring_start_date = _parse_optional_date_field(recurring_start_date)
+    _clear_matching_hidden_recurring_placeholders(
+        db,
+        student_id=student_id,
+        day_of_week=sched.day_of_week,
+        start_time=sched.start_time,
+        end_time=sched.end_time,
+        frequency=sched.frequency,
+        anchor_date=sched.anchor_date,
+        day_of_month=sched.day_of_month,
+        recurring_start_date=sched.recurring_start_date,
+        recurring_end_date=sched.recurring_end_date,
+    )
     db.commit()
     return JSONResponse(content={"status": "ok"})
 
@@ -1271,12 +1384,75 @@ def update_lesson_api(
     )
 
 
-def delete_lesson_record(db: Session, lesson: models.Lesson) -> None:
+def _delete_recurring_lesson_and_future(db: Session, lesson: models.Lesson) -> Optional[dict[str, Any]]:
+    """Stop matching schedules before this lesson date and remove this saved occurrence."""
+    schedules = _matching_recurring_schedules_for_lesson(lesson, db)
+    if not schedules:
+        return None
+    st = db.query(models.Student).filter(models.Student.id == lesson.student_id).first()
+    fid = st.family_id if st else None
+    undo = {
+        "kind": "future",
+        "schedule_end_dates": [
+            {"id": sched.id, "recurring_end_date": sched.recurring_end_date.isoformat() if sched.recurring_end_date else None}
+            for sched in schedules
+        ],
+    }
+    original_rules = [
+        SimpleNamespace(
+            day_of_week=sched.day_of_week,
+            start_time=sched.start_time,
+            end_time=sched.end_time,
+            frequency=sched.frequency,
+            anchor_date=sched.anchor_date,
+            day_of_month=sched.day_of_month,
+            recurring_start_date=sched.recurring_start_date,
+            recurring_end_date=sched.recurring_end_date,
+        )
+        for sched in schedules
+    ]
+    for sched in schedules:
+        sched.recurring_end_date = lesson.lesson_date - timedelta(days=1)
+
+    future_candidates = db.query(models.Lesson).filter(
+        models.Lesson.student_id == lesson.student_id,
+        models.Lesson.lesson_date >= lesson.lesson_date,
+        models.Lesson.start_time == lesson.start_time,
+        models.Lesson.end_time == lesson.end_time,
+    ).all()
+    for candidate in future_candidates:
+        if candidate.id == lesson.id:
+            continue
+        if not any(_schedule_matches_date(rule, candidate.lesson_date) for rule in original_rules):
+            continue
+        if _calendar_skip_placeholder(candidate) or (
+            candidate.status != "completed" and not candidate.is_paid and not candidate.payment_finalized
+        ):
+            _delete_balance_transactions_for_lesson(db, candidate.id)
+            db.delete(candidate)
+
+    _reverse_lesson_balance_on_family(lesson, db)
+    _delete_balance_transactions_for_lesson(db, lesson.id)
+    db.delete(lesson)
+    db.flush()
+    if fid:
+        fam = db.query(models.Family).filter(models.Family.id == fid).first()
+        if fam:
+            fam.balance = _recompute_family_balance_from_lessons(db, fid)
+    return undo
+
+
+def delete_lesson_record(db: Session, lesson: models.Lesson, scope: str = "one") -> Optional[dict[str, Any]]:
     """Apply calendar-equivalent delete: recurring slot → cancelled placeholder; else remove row.
     Updates family balance; does not commit — caller must ``db.commit()``."""
+    if (scope or "").strip().lower() == "future":
+        undo = _delete_recurring_lesson_and_future(db, lesson)
+        if undo:
+            return undo
     st = db.query(models.Student).filter(models.Student.id == lesson.student_id).first()
     fid = st.family_id if st else None
     _reverse_lesson_balance_on_family(lesson, db)
+    undo: Optional[dict[str, Any]] = None
     if _lesson_matches_any_recurring_slot(lesson, db):
         # Remove this date from the calendar but keep RegularSchedule — same as skip-slot
         lesson.status = "cancelled"
@@ -1288,6 +1464,7 @@ def delete_lesson_record(db: Session, lesson: models.Lesson) -> None:
         lesson.price = 0
         lesson.notes = "הוסר מהלוח — המחזוריות נשארת"
         db.flush()
+        undo = {"kind": "one", "lesson_id": lesson.id}
     else:
         _delete_balance_transactions_for_lesson(db, lesson.id)
         db.delete(lesson)
@@ -1296,16 +1473,54 @@ def delete_lesson_record(db: Session, lesson: models.Lesson) -> None:
         fam = db.query(models.Family).filter(models.Family.id == fid).first()
         if fam:
             fam.balance = _recompute_family_balance_from_lessons(db, fid)
+    return undo
 
 
 @router.post("/api/lessons/{lesson_id}/delete")
-def delete_lesson_api(lesson_id: int, db: Session = Depends(get_db)):
+def delete_lesson_api(
+    lesson_id: int,
+    scope: str = Form("one"),
+    db: Session = Depends(get_db),
+):
     lesson = db.query(models.Lesson).filter(models.Lesson.id == lesson_id).first()
     if not lesson:
         return JSONResponse(content={"status": "ok"})
-    delete_lesson_record(db, lesson)
+    undo = delete_lesson_record(db, lesson, scope=scope)
+    undo_token = None
+    if undo:
+        undo_token = secrets.token_urlsafe(16)
+        RECENT_DELETE_UNDO[undo_token] = undo
     db.commit()
-    return JSONResponse(content={"status": "ok"})
+    return JSONResponse(content={"status": "ok", "undo_token": undo_token})
+
+
+@router.post("/api/lessons/delete/undo")
+def undo_delete_lesson_api(
+    token: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    undo = RECENT_DELETE_UNDO.pop((token or "").strip(), None)
+    if not undo:
+        raise HTTPException(status_code=404, detail="לא נמצאה מחיקה לביטול")
+    kind = undo.get("kind")
+    if kind == "one":
+        lesson = db.query(models.Lesson).filter(models.Lesson.id == int(undo["lesson_id"])).first()
+        if lesson and _calendar_skip_placeholder(lesson):
+            db.delete(lesson)
+            db.commit()
+        return JSONResponse(content={"status": "ok"})
+    if kind == "future":
+        for item in undo.get("schedule_end_dates", []):
+            sched = db.query(models.RegularSchedule).filter(
+                models.RegularSchedule.id == int(item["id"])
+            ).first()
+            if not sched:
+                continue
+            raw_end = item.get("recurring_end_date")
+            sched.recurring_end_date = date.fromisoformat(raw_end) if raw_end else None
+        db.commit()
+        return JSONResponse(content={"status": "ok"})
+    raise HTTPException(status_code=400, detail="סוג ביטול לא תקין")
 
 
 # --- Lesson detail page ---

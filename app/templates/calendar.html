@@ -27,6 +27,15 @@
     </div>
   </div>
 
+  <div class="cal-action-toast d-none" id="calendarUndoToast" role="status" aria-live="polite" dir="rtl">
+    <span class="cal-action-toast__icon" aria-hidden="true"><i class="bi bi-check-circle-fill"></i></span>
+    <span class="cal-action-toast__text" id="calendarUndoToastText">השיעור נמחק</span>
+    <button type="button" class="cal-action-toast__undo d-none" id="calendarUndoToastBtn" onclick="undoLastCalendarDelete()">בטל מחיקה</button>
+    <button type="button" class="cal-action-toast__close" aria-label="סגור" onclick="hideCalendarUndoToast()">
+      <i class="bi bi-x-lg" aria-hidden="true"></i>
+    </button>
+  </div>
+
 <!-- Instant hover preview (native title= tooltips are slow and easy to miss) -->
 <div id="calHoverPreview" class="cal-hover-preview" role="tooltip" aria-hidden="true" hidden>
   <div class="cal-hover-preview__label" id="calHoverPreviewLabel">תצוגה מקדימה</div>
@@ -96,6 +105,34 @@
       </div>
       <div class="modal-footer border-0 pt-0">
         <button type="button" class="btn btn-link text-muted" data-bs-dismiss="modal">ביטול — לא לשנות</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Choice shown before deleting a lesson that belongs to a recurring schedule -->
+<div class="modal fade" id="recurringDeleteModal" tabindex="-1" aria-labelledby="recurringDeleteModalTitle" aria-hidden="true" dir="rtl" lang="he">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <div>
+          <h2 class="modal-title h5 mb-1" id="recurringDeleteModalTitle">מחיקת שיעור קבוע</h2>
+          <p class="text-muted small mb-0">מה למחוק?</p>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="ביטול"></button>
+      </div>
+      <div class="modal-body pt-3">
+        <button type="button" class="btn recurring-move-choice w-100 text-start mb-2" onclick="chooseRecurringDeleteScope('one')">
+          <i class="bi bi-calendar-x" aria-hidden="true"></i>
+          <span><strong>רק השיעור הזה</strong><small>רק התאריך הזה ייעלם. השיעורים הבאים נשארים כרגיל.</small></span>
+        </button>
+        <button type="button" class="btn recurring-move-choice w-100 text-start" onclick="chooseRecurringDeleteScope('future')">
+          <i class="bi bi-calendar2-x" aria-hidden="true"></i>
+          <span><strong>השיעור הזה וכל השיעורים הבאים</strong><small>המחזור ייעצר מהתאריך הזה והלאה. שיעורים קודמים לא משתנים.</small></span>
+        </button>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-link text-muted" data-bs-dismiss="modal">ביטול — לא למחוק</button>
       </div>
     </div>
   </div>

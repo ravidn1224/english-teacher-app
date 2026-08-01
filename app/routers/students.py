@@ -141,6 +141,9 @@ def list_students(request: Request, db: Session = Depends(get_db)):
             "day_names_short": DAY_NAMES_SHORT,
             "global_default_individual": g_ind,
             "global_default_group": g_grp,
+            "student_has_group_lessons": _student_has_group_lessons,
+            "student_has_private_lessons": _student_has_private_lessons,
+            "student_lesson_type_label": _student_lesson_type_label,
         },
     )
 
@@ -195,14 +198,40 @@ def new_student_form(
             "prefill_default_price": prefill_price,
             "global_default_individual": g_ind,
             "global_default_group": g_grp,
+            "student_has_group_lessons": _student_has_group_lessons,
+            "student_has_private_lessons": _student_has_private_lessons,
+            "student_lesson_type_label": _student_lesson_type_label,
         },
     )
 
 
-def _form_lesson_type_group(raw: Optional[str]) -> str:
+def _student_has_group_lessons(student: models.Student) -> bool:
+    return (getattr(student, "lesson_type", None) or "individual").strip().lower() in (
+        "group",
+        "both",
+    )
+
+
+def _student_has_private_lessons(student: models.Student) -> bool:
+    return (getattr(student, "lesson_type", None) or "individual").strip().lower() in (
+        "individual",
+        "both",
+    )
+
+
+def _student_lesson_type_label(student: models.Student) -> str:
+    lesson_type = (getattr(student, "lesson_type", None) or "individual").strip().lower()
+    if lesson_type == "group":
+        return "קבוצתי"
+    if lesson_type == "both":
+        return "פרטי + קבוצתי"
+    return "פרטי"
+
+
+def _normalize_lesson_type(raw: Optional[str]) -> str:
     s = (raw or "").strip().lower()
-    if s in ("1", "true", "yes", "on"):
-        return "group"
+    if s in ("individual", "group", "both"):
+        return s
     return "individual"
 
 
@@ -215,7 +244,7 @@ def create_student(
     parent_phone: str = Form(""),
     default_price: int = Form(0),
     default_price_group: int = Form(0),
-    lesson_type_group: Optional[str] = Form(None),
+    lesson_type: Optional[str] = Form(None),
     notes: str = Form(""),
     db: Session = Depends(get_db),
 ):
@@ -224,7 +253,7 @@ def create_student(
         last_name=last_name,
         parent_name=parent_name,
         parent_phone=parent_phone,
-        lesson_type=_form_lesson_type_group(lesson_type_group),
+        lesson_type=_normalize_lesson_type(lesson_type),
         default_price=max(0, int(default_price)),
         default_price_group=max(0, int(default_price_group)),
         notes=notes,
@@ -268,6 +297,9 @@ def student_detail(request: Request, student_id: int, db: Session = Depends(get_
             "default_recur_start": date.today().isoformat(),
             "global_default_individual": g_ind,
             "global_default_group": g_grp,
+            "student_has_group_lessons": _student_has_group_lessons,
+            "student_has_private_lessons": _student_has_private_lessons,
+            "student_lesson_type_label": _student_lesson_type_label,
         },
     )
 
@@ -302,7 +334,7 @@ def update_student(
     parent_phone: str = Form(""),
     default_price: int = Form(0),
     default_price_group: int = Form(0),
-    lesson_type_group: Optional[str] = Form(None),
+    lesson_type: Optional[str] = Form(None),
     notes: str = Form(""),
     db: Session = Depends(get_db),
 ):
@@ -315,7 +347,7 @@ def update_student(
     student.last_name = last_name
     student.parent_name = parent_name
     student.parent_phone = parent_phone
-    student.lesson_type = _form_lesson_type_group(lesson_type_group)
+    student.lesson_type = _normalize_lesson_type(lesson_type)
     student.default_price = max(0, int(default_price))
     student.default_price_group = max(0, int(default_price_group))
     student.notes = notes
@@ -379,6 +411,8 @@ def add_schedule(
     db: Session = Depends(get_db),
 ):
     from datetime import time as dt_time
+    from .lessons import _clear_matching_hidden_recurring_placeholders
+
     start = dt_time.fromisoformat(start_time)
     end = dt_time.fromisoformat(end_time)
     rs_raw = (recurring_start_date or "").strip()
@@ -397,6 +431,15 @@ def add_schedule(
         recurring_start_date=rs_d,
     )
     db.add(sched)
+    _clear_matching_hidden_recurring_placeholders(
+        db,
+        student_id=student_id,
+        day_of_week=day_of_week,
+        start_time=start,
+        end_time=end,
+        frequency="weekly",
+        recurring_start_date=rs_d,
+    )
     db.commit()
     return RedirectResponse(url=f"/students/{student_id}", status_code=303)
 

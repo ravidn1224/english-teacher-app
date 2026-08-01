@@ -20,11 +20,7 @@
 
   <h1 class="h3 mb-2 d-flex flex-wrap align-items-center gap-2" id="student-detail-heading">
     <span>{{ student.first_name }} {{ student.last_name }}</span>
-    {% if student.lesson_type == 'group' %}
-    <span class="badge rounded-pill text-bg-secondary fw-normal" title="ברירת מחדל במערכת: שיעור קבוצתי">שיעור קבוצתי כברירת מחדל</span>
-    {% else %}
-    <span class="badge rounded-pill text-bg-light border fw-normal text-muted" title="ברירת מחדל במערכת: שיעור פרטי">שיעור פרטי כברירת מחדל</span>
-    {% endif %}
+    <span class="badge rounded-pill text-bg-light border fw-normal text-muted" title="סוג שיעור">{{ student_lesson_type_label(student) }}</span>
   </h1>
   <div class="student-detail-guide mb-3" role="note">
     <div><i class="bi bi-1-circle-fill" aria-hidden="true"></i><span>עדכני פרטים ומחיר</span></div>
@@ -65,25 +61,33 @@
               <input type="tel" class="form-control" id="detailParentPhone" name="parent_phone"
                      value="{{ student.parent_phone or '' }}" autocomplete="tel" />
             </div>
-            <div class="mb-2">
-              <div class="form-check form-check-reverse mb-2">
-                <input class="form-check-input" type="checkbox" name="lesson_type_group" value="1" id="detailLessonTypeGroup"
+            <div class="mb-2 student-detail-lesson-type">
+              <label class="form-label small mb-1">סוג שיעור</label>
+              <div class="lesson-type-options lesson-type-options--compact" role="radiogroup" aria-label="סוג שיעור">
+                <input type="radio" class="btn-check" name="lesson_type" id="detailLessonTypePrivate" value="individual" autocomplete="off"
+                       {% if student.lesson_type == 'individual' %}checked{% endif %} />
+                <label class="btn lesson-type-option" for="detailLessonTypePrivate">פרטי</label>
+
+                <input type="radio" class="btn-check" name="lesson_type" id="detailLessonTypeGroup" value="group" autocomplete="off"
                        {% if student.lesson_type == 'group' %}checked{% endif %} />
-                <label class="form-check-label small" for="detailLessonTypeGroup">ברירת מחדל: שיעור קבוצתי (מולאי מחיר קבוצתי בלוח)</label>
+                <label class="btn lesson-type-option" for="detailLessonTypeGroup">קבוצתי</label>
+
+                <input type="radio" class="btn-check" name="lesson_type" id="detailLessonTypeBoth" value="both" autocomplete="off"
+                       {% if student.lesson_type == 'both' %}checked{% endif %} />
+                <label class="btn lesson-type-option" for="detailLessonTypeBoth">פרטי + קבוצתי</label>
               </div>
             </div>
-            <div class="mb-2">
-              <label class="form-label small mb-0" for="detailDefaultPrice">מחיר ברירת מחדל — פרטי (₪)</label>
+            <div class="mb-2 lesson-track-panel lesson-track-panel--detail-group" id="detailPrivatePricePanel" data-default-private-price="{{ global_default_individual }}">
+              <label class="form-label small mb-0" for="detailDefaultPrice">מחיר פרטי (₪)</label>
               <input type="number" class="form-control" id="detailDefaultPrice" name="default_price"
-                     min="0" value="{{ student.default_price }}" />
+                     min="0" value="{{ student.default_price if student.default_price > 0 else global_default_individual }}" />
+              <p class="text-muted small mb-0 mt-1" id="detailPrivatePriceHint"></p>
             </div>
-            <div class="mb-2">
-              <label class="form-label small mb-0" for="detailDefaultPriceGroup">מחיר ברירת מחדל — קבוצתי (₪)</label>
+            <div class="mb-2 lesson-track-panel lesson-track-panel--detail-group" id="detailGroupPricePanel" data-default-group-price="{{ global_default_group }}">
+              <label class="form-label small mb-0" for="detailDefaultPriceGroup">מחיר קבוצתי (₪)</label>
               <input type="number" class="form-control" id="detailDefaultPriceGroup" name="default_price_group"
-                     min="0" value="{{ student.default_price_group or 0 }}" />
-              <p class="text-muted small mb-0 mt-1">
-                0 = המחיר הכללי שמוגדר בדף תלמידים.
-              </p>
+                     min="0" value="{{ student.default_price_group if student.default_price_group > 0 else global_default_group }}" />
+              <p class="text-muted small mb-0 mt-1" id="detailGroupPriceHint"></p>
             </div>
             <div class="mb-3">
               <label class="form-label small mb-0" for="detailNotes">הערות</label>
@@ -269,6 +273,57 @@
 {% endblock %}
 
 {% block scripts %}
+{{ super() }}
+<script>
+(function () {
+  var typeInputs = Array.prototype.slice.call(document.querySelectorAll('input[name="lesson_type"]'));
+  var privatePanel = document.getElementById('detailPrivatePricePanel');
+  var privateInput = document.getElementById('detailDefaultPrice');
+  var privateHint = document.getElementById('detailPrivatePriceHint');
+  var panel = document.getElementById('detailGroupPricePanel');
+  var input = document.getElementById('detailDefaultPriceGroup');
+  var hint = document.getElementById('detailGroupPriceHint');
+  if (!typeInputs.length || !privatePanel || !privateInput || !panel || !input) return;
+  var defaultPrivatePrice = Number(privatePanel.getAttribute('data-default-private-price') || '0') || 0;
+  var defaultGroupPrice = Number(panel.getAttribute('data-default-group-price') || '0') || 0;
+
+  function currentType() {
+    var selected = typeInputs.find(function (el) { return el.checked; });
+    return selected ? selected.value : 'individual';
+  }
+
+  function syncLessonTypePanels() {
+    var type = currentType();
+    var privateEnabled = type === 'individual' || type === 'both';
+    var groupEnabled = type === 'group' || type === 'both';
+    privatePanel.classList.toggle('lesson-track-panel--disabled', !privateEnabled);
+    panel.classList.toggle('lesson-track-panel--disabled', !groupEnabled);
+    privateInput.disabled = !privateEnabled;
+    input.disabled = !groupEnabled;
+    if (privateEnabled && Number(privateInput.value || '0') <= 0 && defaultPrivatePrice > 0) {
+      privateInput.value = String(defaultPrivatePrice);
+    }
+    if (groupEnabled && Number(input.value || '0') <= 0 && defaultGroupPrice > 0) {
+      input.value = String(defaultGroupPrice);
+    }
+    if (privateHint) {
+      privateHint.textContent = privateEnabled
+        ? 'פעיל. המחיר הזה ישמש לשיעורים פרטיים.'
+        : 'כבוי כרגע כי נבחר רק שיעור קבוצתי.';
+    }
+    if (hint) {
+      hint.textContent = groupEnabled
+        ? 'פעיל. המחיר הזה ישמש לשיעורים קבוצתיים.'
+        : 'כבוי כרגע כי נבחר רק שיעור פרטי.';
+    }
+  }
+
+  typeInputs.forEach(function (el) {
+    el.addEventListener('change', syncLessonTypePanels);
+  });
+  syncLessonTypePanels();
+})();
+</script>
 <script>
 (function () {
   var startEl = document.getElementById('recurStart');
