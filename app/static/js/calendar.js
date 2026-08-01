@@ -212,13 +212,22 @@ function toggleCalendarFullscreen() {
     .catch(function () { setCalendarWorkView(true, false); });
 }
 
-function askRecurringDragScope(oldStart, newStart) {
+function askRecurringDragScope(oldStart, newStart, options) {
   if (!recurringMoveModal) return Promise.resolve('cancel');
+  const opts = options || {};
   const futureButton = document.querySelector('.recurring-move-choice--future');
   const futureNote = document.getElementById('recurringMoveFutureNote');
-  const canMoveFuture = toInputDate(newStart) >= toInputDate(oldStart);
+  const canMoveFuture =
+    opts.allowFuture !== false && toInputDate(newStart) >= toInputDate(oldStart);
   if (futureButton) futureButton.disabled = !canMoveFuture;
-  if (futureNote) futureNote.classList.toggle('d-none', canMoveFuture);
+  if (futureNote) {
+    if (opts.allowFuture === false) {
+      futureNote.textContent = 'אפשר להחיל שינוי עתידי רק כאשר כל התלמידים בשיעור הקבוצתי מגיעים מלוח קבוע.';
+    } else {
+      futureNote.textContent = 'אפשר להחיל שינוי על השיעורים הבאים רק כאשר גוררים את השיעור קדימה או לאותו תאריך.';
+    }
+    futureNote.classList.toggle('d-none', canMoveFuture);
+  }
   return new Promise(function (resolve) {
     pendingRecurringDragChoice = resolve;
     recurringMoveModal.show();
@@ -232,6 +241,119 @@ function chooseRecurringDragScope(scope) {
   if (resolve) resolve(scope === 'future' ? 'future' : 'one');
 }
 
+function groupMemberProps(member) {
+  return (member && member.extendedProps) || {};
+}
+
+function isRecurringGroupMember(member) {
+  const mp = groupMemberProps(member);
+  return mp.isRecurring === true && mp.studentId != null && mp.scheduleId != null;
+}
+
+function groupMemberLessonId(member) {
+  const id = Number(member && member.id);
+  return Number.isFinite(id) ? id : null;
+}
+
+function buildRecurringMoveForm(member, oldStart, oldEnd, newStart, newEnd) {
+  const mp = groupMemberProps(member);
+  const fd = new FormData();
+  fd.append('student_id', String(mp.studentId));
+  fd.append('original_date', toInputDate(oldStart));
+  fd.append('original_start', toInputTime(oldStart));
+  fd.append('original_end', toInputTime(oldEnd));
+  fd.append('new_date', toInputDate(newStart));
+  fd.append('new_start', toInputTime(newStart));
+  fd.append('new_end', toInputTime(newEnd));
+  return fd;
+}
+
+async function updateRealGroupMemberLessons(members, newStart, newEnd) {
+  const ids = members
+    .map(groupMemberLessonId)
+    .filter(function (id) {
+      return id != null;
+    });
+  if (!ids.length) return;
+  if (ids.length >= 2) {
+    const fd = new FormData();
+    fd.append('lesson_ids', ids.join(','));
+    fd.append('lesson_date', toInputDate(newStart));
+    fd.append('start_time', toInputTime(newStart));
+    fd.append('end_time', toInputTime(newEnd));
+    const res = await fetch('/api/lessons/batch-update-datetime', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('update failed');
+    return;
+  }
+  const fd = new FormData();
+  fd.append('lesson_date', toInputDate(newStart));
+  fd.append('start_time', toInputTime(newStart));
+  fd.append('end_time', toInputTime(newEnd));
+  const res = await fetch(`/api/lessons/${ids[0]}/update`, { method: 'POST', body: fd });
+  if (!res.ok) throw new Error('update failed');
+}
+
+async function persistGroupCompositeAfterDragResize(info, members) {
+  const oldStart = info.oldEvent.start;
+  const oldEnd = getEventEnd(info.oldEvent);
+  const newStart = info.event.start;
+  const newEnd = getEventEnd(info.event);
+  if (!oldStart || !oldEnd || !newStart || !newEnd) throw new Error('bad dates');
+
+  const recurringMembers = members.filter(isRecurringGroupMember);
+  const realMembers = members.filter(function (member) {
+    return !isRecurringGroupMember(member) && groupMemberLessonId(member) != null;
+  });
+
+  if (!recurringMembers.length) {
+    if (realMembers.length < 2) throw new Error('composite');
+    await updateRealGroupMemberLessons(realMembers, newStart, newEnd);
+    return;
+  }
+
+  const allMembersCanMoveAsRecurring = recurringMembers.length === members.length;
+  const scope = await askRecurringDragScope(oldStart, newStart, {
+    allowFuture: allMembersCanMoveAsRecurring,
+  });
+  if (scope === 'cancel') throw new Error('recur-cancel');
+
+  if (scope === 'future') {
+    if (!allMembersCanMoveAsRecurring) throw new Error('recur failed');
+  }
+
+  if (allMembersCanMoveAsRecurring) {
+    const fd = buildRecurringMoveForm(recurringMembers[0], oldStart, oldEnd, newStart, newEnd);
+    fd.append('scope', scope);
+    fd.append('members', JSON.stringify(recurringMembers.map(function (member) {
+      const mp = groupMemberProps(member);
+      const price = mp.price != null && mp.price !== '' ? Number(mp.price) : 0;
+      return {
+        student_id: mp.studentId,
+        schedule_id: mp.scheduleId,
+        price: Number.isFinite(price) ? price : 0,
+        notes: mp.notes != null ? String(mp.notes) : '',
+      };
+    })));
+    const res = await fetch('/api/lessons/group-recurring/move', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('recur failed');
+    return;
+  }
+
+  await Promise.all(recurringMembers.map(function (member) {
+    const mp = groupMemberProps(member);
+    const price = mp.price != null && mp.price !== '' ? Number(mp.price) : 0;
+    const fd = buildRecurringMoveForm(member, oldStart, oldEnd, newStart, newEnd);
+    fd.append('price', String(Number.isFinite(price) ? price : 0));
+    fd.append('notes', mp.notes != null ? String(mp.notes) : '');
+    fd.append('is_group_lesson', 'true');
+    return fetch('/api/lessons/confirm-recurring', { method: 'POST', body: fd })
+      .then(function (res) {
+        if (!res.ok) throw new Error('recur failed');
+      });
+  }));
+  await updateRealGroupMemberLessons(realMembers, newStart, newEnd);
+}
+
 /** Persist lesson after drag or resize (real DB row or confirm recurring slot). */
 async function persistLessonAfterDragResize(info) {
   normalizeDroppedTimedLesson(info);
@@ -241,24 +363,7 @@ async function persistLessonAfterDragResize(info) {
 
   if (p.isGroupComposite) {
     const members = p.groupMembers || [];
-    const ids = members
-      .map(function (m) {
-        return Number(m && m.id);
-      })
-      .filter(function (x) {
-        return Number.isFinite(x);
-      });
-    if (ids.length < 2) throw new Error('composite');
-    const newStart = ev.start;
-    const newEnd = getEventEnd(ev);
-    if (!newStart || !newEnd) throw new Error('bad dates');
-    const fd = new FormData();
-    fd.append('lesson_ids', ids.join(','));
-    fd.append('lesson_date', toInputDate(newStart));
-    fd.append('start_time', toInputTime(newStart));
-    fd.append('end_time', toInputTime(newEnd));
-    const res = await fetch('/api/lessons/batch-update-datetime', { method: 'POST', body: fd });
-    if (!res.ok) throw new Error('update failed');
+    await persistGroupCompositeAfterDragResize(info, members);
     return;
   }
 

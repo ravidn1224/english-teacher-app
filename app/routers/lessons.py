@@ -3,6 +3,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from sqlalchemy.orm import Session, joinedload
 from pathlib import Path
 import calendar as cal_std
+import json
 from datetime import date, datetime, time as dt_time, timedelta
 from typing import Optional, Set
 
@@ -879,6 +880,129 @@ def split_and_move_recurring_schedule_api(
     db.commit()
     db.refresh(new_sched)
     return JSONResponse(content={"status": "ok", "id": new_sched.id})
+
+
+@router.post("/api/lessons/group-recurring/move")
+def move_group_recurring_api(
+    members: str = Form(...),
+    scope: str = Form(...),
+    original_date: str = Form(...),
+    original_start: str = Form(...),
+    original_end: str = Form(...),
+    new_date: str = Form(...),
+    new_start: str = Form(...),
+    new_end: str = Form(...),
+    db: Session = Depends(get_db),
+):
+    """Move a merged recurring group slot atomically for all students in that slot."""
+    try:
+        raw_members = json.loads(members)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="פרטי הקבוצה אינם תקינים")
+    if not isinstance(raw_members, list) or len(raw_members) < 2:
+        raise HTTPException(status_code=400, detail="נדרשים לפחות שני תלמידים בקבוצה")
+
+    move_scope = str(scope or "").strip().lower()
+    if move_scope not in {"one", "future"}:
+        raise HTTPException(status_code=400, detail="סוג שינוי לא תקין")
+
+    orig = date.fromisoformat(str(original_date).strip()[:10])
+    new = date.fromisoformat(str(new_date).strip()[:10])
+    orig_st = _parse_time_loose(original_start)
+    orig_en = _parse_time_loose(original_end)
+    new_st = _parse_time_loose(new_start)
+    new_en = _parse_time_loose(new_end)
+    if move_scope == "future" and new < orig:
+        raise HTTPException(status_code=400, detail="אפשר להחיל שינוי על שיעורים עתידיים רק מהשיעור שנגרר והלאה")
+
+    prepared = []
+    for item in raw_members:
+        if not isinstance(item, dict):
+            raise HTTPException(status_code=400, detail="פרטי הקבוצה אינם תקינים")
+        try:
+            student_id = int(item.get("student_id"))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="תלמיד בקבוצה אינו תקין")
+        student = db.query(models.Student).filter(models.Student.id == student_id).first()
+        if not student:
+            raise HTTPException(status_code=404, detail="תלמיד בקבוצה לא נמצא")
+        try:
+            price = int(item.get("price") or 0)
+        except (TypeError, ValueError):
+            price = 0
+        notes = str(item.get("notes") or "")
+        sched = None
+        if move_scope == "future":
+            try:
+                schedule_id = int(item.get("schedule_id"))
+            except (TypeError, ValueError):
+                raise HTTPException(status_code=400, detail="לוח קבוע בקבוצה אינו תקין")
+            sched = db.query(models.RegularSchedule).filter(models.RegularSchedule.id == schedule_id).first()
+            if not sched or sched.student_id != student_id:
+                raise HTTPException(status_code=404, detail="לוח קבוע בקבוצה לא נמצא")
+            if not _schedule_matches_date(sched, orig) or sched.start_time != orig_st or sched.end_time != orig_en:
+                raise HTTPException(status_code=400, detail="אחד השיעורים הקבועים כבר השתנה; רענני את הלוח ונסי שוב")
+        prepared.append({"student": student, "price": price, "notes": notes, "schedule": sched})
+
+    if move_scope == "future":
+        for item in prepared:
+            sched = item["schedule"]
+            freq = _sched_frequency(sched)
+            db.add(models.RegularSchedule(
+                student_id=item["student"].id,
+                day_of_week=_python_weekday_to_app_day(new.weekday()),
+                start_time=new_st,
+                end_time=new_en,
+                frequency=freq,
+                anchor_date=new if freq == "biweekly" else None,
+                day_of_month=new.day if freq == "monthly" else None,
+                recurring_start_date=new,
+                recurring_end_date=None,
+            ))
+            sched.recurring_end_date = orig - timedelta(days=1)
+        db.commit()
+        return JSONResponse(content={"ok": True, "updated": len(prepared), "scope": "future"})
+
+    moved = orig != new or orig_st != new_st or orig_en != new_en
+    for item in prepared:
+        student = item["student"]
+        price = item["price"]
+        if price <= 0:
+            price = effective_student_default_price_for_lesson(db, student, True)
+        family_utils.get_or_create_family_for_student(db, student, models)
+        if moved:
+            already = db.query(models.Lesson).filter(
+                models.Lesson.student_id == student.id,
+                models.Lesson.lesson_date == orig,
+                models.Lesson.start_time == orig_st,
+                models.Lesson.end_time == orig_en,
+            ).first()
+            if not already:
+                db.add(models.Lesson(
+                    student_id=student.id,
+                    lesson_date=orig,
+                    start_time=orig_st,
+                    end_time=orig_en,
+                    price=0,
+                    status="cancelled",
+                    is_paid=False,
+                    notes="הועבר לתאריך אחר",
+                ))
+        db.add(models.Lesson(
+            student_id=student.id,
+            lesson_date=new,
+            start_time=new_st,
+            end_time=new_en,
+            price=price,
+            is_group_lesson=True,
+            status="scheduled",
+            is_paid=False,
+            paid_amount=None,
+            payment_method="",
+            notes=item["notes"],
+        ))
+    db.commit()
+    return JSONResponse(content={"ok": True, "updated": len(prepared), "scope": "one"})
 
 
 @router.post("/api/lessons/recurring-schedule/{sched_id}/delete")
