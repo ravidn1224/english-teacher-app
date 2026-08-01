@@ -62,6 +62,13 @@ def ensure_schema(engine):
                         "ALTER TABLE lessons ADD COLUMN is_group_lesson BOOLEAN NOT NULL DEFAULT false"
                     )
                 )
+        if "change_given" not in cols:
+            with engine.begin() as conn:
+                conn.execute(
+                    text(
+                        "ALTER TABLE lessons ADD COLUMN change_given BOOLEAN NOT NULL DEFAULT false"
+                    )
+                )
         stu_cols = {c["name"] for c in insp.get_columns("students")} if "students" in insp.get_table_names() else set()
         if "balance" not in stu_cols:
             with engine.begin() as conn:
@@ -79,6 +86,19 @@ def ensure_schema(engine):
                     conn.execute(
                         text(
                             "ALTER TABLE students ADD COLUMN lesson_type VARCHAR(20) NOT NULL DEFAULT 'individual'"
+                        )
+                    )
+            if "default_price_group" not in stu_cols and "students" in insp.get_table_names():
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE students ADD COLUMN default_price_group INTEGER NOT NULL DEFAULT 0"
+                        )
+                    )
+                    conn.execute(
+                        text(
+                            "UPDATE students SET default_price_group = default_price "
+                            "WHERE default_price > 0 AND (default_price_group IS NULL OR default_price_group = 0)"
                         )
                     )
         if "regular_schedule" in insp.get_table_names():
@@ -101,6 +121,13 @@ def ensure_schema(engine):
                     conn.execute(
                         text(
                             "ALTER TABLE regular_schedule ADD COLUMN recurring_start_date DATE NULL"
+                        )
+                    )
+            if "recurring_end_date" not in rs_cols:
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "ALTER TABLE regular_schedule ADD COLUMN recurring_end_date DATE NULL"
                         )
                     )
         if (

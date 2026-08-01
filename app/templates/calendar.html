@@ -7,39 +7,98 @@
 
 {% block content %}
 <div class="gc-cal-page">
-  <!-- Minimal row like Google Calendar: small shortcuts + primary create -->
-  <div class="gc-cal-extras d-flex align-items-center justify-content-start flex-wrap gap-2 mb-2">
-    <button type="button" class="btn btn-primary btn-sm rounded-pill px-3 gc-create-btn" onclick="openNewLessonModal()">
-      <i class="bi bi-plus-lg me-1"></i>שיעור
-    </button>
+  <div class="calendar-workspace" id="calendarWorkspace">
+    <header class="gc-cal-appbar">
+      <div class="gc-cal-appbar__title">
+        <h1 class="h4 mb-0"><i class="bi bi-calendar-week me-2 text-primary" aria-hidden="true"></i>לוח שיעורים</h1>
+        <span class="gc-cal-appbar__hint">לחיצה על שיעור לעדכון · גרירה לשינוי זמן</span>
+      </div>
+      <div class="gc-cal-appbar__actions">
+        <button type="button" class="btn btn-outline-secondary gc-fullscreen-btn" id="calendarFullscreenBtn" onclick="toggleCalendarFullscreen()" aria-pressed="false">
+          <i class="bi bi-arrows-fullscreen me-1" aria-hidden="true"></i><span>מסך מלא</span>
+        </button>
+        <button type="button" class="btn btn-primary gc-create-btn" onclick="openNewLessonModal()">
+          <i class="bi bi-plus-lg me-1" aria-hidden="true"></i>שיעור חדש
+        </button>
+      </div>
+    </header>
+    <div class="cal-shell">
+      <div id="calendar"></div>
+    </div>
   </div>
-
-<div class="cal-shell mb-2">
-  <div id="calendar"></div>
-</div>
 
 <!-- Instant hover preview (native title= tooltips are slow and easy to miss) -->
 <div id="calHoverPreview" class="cal-hover-preview" role="tooltip" aria-hidden="true" hidden>
-  <div class="cal-hover-preview__label">Lesson preview</div>
+  <div class="cal-hover-preview__label" id="calHoverPreviewLabel">תצוגה מקדימה</div>
   <div class="cal-hover-preview__name" id="calHoverPreviewName"></div>
+  <div class="cal-hover-preview__list-wrap d-none" id="calHoverPreviewListWrap" aria-hidden="true">
+    <ul class="cal-hover-preview__list mb-0" id="calHoverPreviewList"></ul>
+  </div>
   <div class="cal-hover-preview__time" id="calHoverPreviewTime"></div>
   <div class="cal-hover-preview__status" id="calHoverPreviewStatus"></div>
-  <div class="cal-hover-preview__hint">Click to open details</div>
+  <div class="cal-hover-preview__hint" id="calHoverPreviewHint">לחיצה לפתיחת פרטים</div>
+</div>
+
+<!-- Same time slot → pick student, then open detail on תשלום -->
+<div class="modal fade" id="groupLessonPickModal" tabindex="-1" aria-labelledby="groupLessonPickTitle" aria-hidden="true" dir="rtl" lang="he">
+  <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="groupLessonPickTitle">שיעור קבוצתי</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="סגור"></button>
+      </div>
+      <div class="modal-body">
+        <p class="text-muted small mb-2" id="groupLessonPickTime"></p>
+        <p class="small text-body-secondary mb-3">בחרו תלמיד — ייפתחו פרטי השיעור עם גלילה לתשלום.</p>
+        <div class="list-group list-group-flush border rounded overflow-hidden" id="groupLessonPickList"></div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <details class="gc-cal-foot text-muted small mb-0">
-  <summary>מקרא צבעים · עזרה קצרה</summary>
+  <summary>עזרה ומקרא צבעים</summary>
   <div class="gc-legend-row mt-2 pt-2 border-top">
     <span><i class="gc-dot" style="background:#14b8a6"></i>קבוע</span>
     <span><i class="gc-dot" style="background:#ccfbf1;border:1px solid #5eead4"></i>ממתין</span>
     <span><i class="gc-dot" style="background:#6b7280"></i>לא הגיע/ה</span>
-    <span><i class="gc-dot" style="background:#f59e0b"></i>הגיע · לא שולם</span>
+    <span><i class="gc-dot" style="background:#dc2626"></i>הגיע · לא שולם</span>
     <span><i class="gc-dot" style="background:#059669"></i>שולם</span>
+    <span><i class="gc-dot" style="background:#eab308"></i>תשלום חלקי</span>
     <span><i class="gc-dot" style="background:#94a3b8"></i>בוטל</span>
-    <span class="gc-legend-note">קו אדום = עכשיו · <strong>גרירה</strong> = הזזה ליום/שעה אחרים (חודש · שבוע · יום) · משיכת קצה תחתון = שינוי אורך · נשמר אוטומטית · לחיצה = פרטים</span>
+    <span class="gc-legend-note"><strong>גרירה</strong> = שינוי יום/שעה · משיכת קצה תחתון = שינוי אורך · לחיצה = פרטי שיעור</span>
   </div>
 </details>
 
+</div>
+
+<!-- Choice shown before a recurring slot is saved after drag/resize -->
+<div class="modal fade" id="recurringMoveModal" tabindex="-1" aria-labelledby="recurringMoveModalTitle" aria-hidden="true" dir="rtl" lang="he">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header border-0 pb-0">
+        <div>
+          <h2 class="modal-title h5 mb-1" id="recurringMoveModalTitle">הזזת שיעור קבוע</h2>
+          <p class="text-muted small mb-0">מה תרצי לשנות?</p>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="ביטול"></button>
+      </div>
+      <div class="modal-body pt-3">
+        <button type="button" class="btn recurring-move-choice recurring-move-choice--one w-100 text-start mb-2" onclick="chooseRecurringDragScope('one')">
+          <i class="bi bi-calendar-event" aria-hidden="true"></i>
+          <span><strong>רק השיעור הזה</strong><small>המופע שנגרר משתנה; השיעורים הקבועים נשארים כרגיל.</small></span>
+        </button>
+        <button type="button" class="btn recurring-move-choice recurring-move-choice--future w-100 text-start" onclick="chooseRecurringDragScope('future')">
+          <i class="bi bi-calendar-range" aria-hidden="true"></i>
+          <span><strong>השיעור הזה וכל השיעורים הבאים</strong><small>הזמן החדש יחול מהשיעור שנגרר והלאה. שיעורים קודמים לא משתנים.</small></span>
+        </button>
+        <p class="small text-muted mt-2 mb-0 d-none" id="recurringMoveFutureNote">אפשר להחיל שינוי על השיעורים הבאים רק כאשר גוררים את השיעור קדימה או לאותו תאריך.</p>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-link text-muted" data-bs-dismiss="modal">ביטול — לא לשנות</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 
@@ -88,12 +147,12 @@
           </button>
         </div>
 
-        <div id="detPaidRow" class="det-section det-section--pay mb-3">
+        <div id="detPaidRow" class="det-section det-section--pay mb-3" data-detail-payment-section>
           <div class="det-section__head">
             <span class="det-section__icon" aria-hidden="true"><i class="bi bi-wallet2"></i></span>
             <div>
               <h3 class="det-section__title">תשלום</h3>
-              <p class="det-section__hint" id="detPayHint">בחרי אמצעי וסכום, ואז לחצי «שולם» או «לא שולם».</p>
+              <p class="det-section__hint" id="detPayHint">בחרי אמצעי וסכום, ואז לחצי «שולם», «תשלום חלקי» או «לא שולם».</p>
             </div>
           </div>
 
@@ -107,17 +166,14 @@
                 <input type="number" class="form-control" id="detLessonCharge" min="0" step="1" inputmode="numeric" autocomplete="off" />
               </div>
               <div id="detSuggestedPayWrap" class="mb-2 d-none">
-                <span class="small text-muted me-2">תשלום מוצע:</span>
+                <span class="small text-muted me-2">תשלום מוצע <span class="fw-normal">(אחרי יתרת משפחה)</span>:</span>
                 <span id="detSuggestedPayBadge" class="badge rounded-pill bg-light text-dark border fw-semibold"></span>
               </div>
               <div id="detQuickPayRow" class="d-flex flex-wrap gap-2 mb-2 d-none" role="group" aria-label="סכומים מהירים">
                 <button type="button" class="btn btn-sm btn-outline-secondary det-quick-pay" data-amt-suggest="1">לפי תשלום מוצע</button>
                 <button type="button" class="btn btn-sm btn-outline-secondary det-quick-pay" data-amt-zero="1">₪0</button>
               </div>
-              <div id="detGroupLessonRow" class="det-group-lesson-row mt-2 mb-0">
-                <input class="form-check-input flex-shrink-0" type="checkbox" id="detIsGroupLesson" autocomplete="off" aria-describedby="detPayHint" />
-                <label class="form-check-label text-muted mb-0" for="detIsGroupLesson">שיעור קבוצתי (מוצג בחיוב)</label>
-              </div>
+              <p class="small text-muted mb-0 mt-2" id="detPartialPaymentHelp">«שולם» = מחיר מלא. «תשלום חלקי» = סכום נמוך מהחיוב (צהוב בלוח). סכום 0 אחרי «שולם» = לא שולם (אדום).</p>
             </div>
             <label class="form-label small text-muted mb-1" for="detPaidAmount">סכום ששולם (₪)</label>
             <input type="number" class="form-control form-control-lg mb-2" id="detPaidAmount" min="0" step="1" inputmode="numeric" />
@@ -143,9 +199,12 @@
             <button type="button" class="btn btn-outline-secondary btn-sm w-100 mb-2 d-none" id="detSavePaymentDetailsBtn" onclick="detSavePaymentDetails()">עדכן סכום ואמצעי (כבר שולם)</button>
           </div>
 
-          <div class="d-flex flex-column flex-sm-row gap-2 mt-2 det-paid-actions">
-            <button type="button" id="detMarkPaidBtn" class="btn btn-success flex-fill" onclick="detApplyPaidState(true)">
+          <div class="d-flex flex-column flex-sm-row flex-wrap gap-2 mt-2 det-paid-actions">
+            <button type="button" id="detMarkPaidBtn" class="btn btn-success flex-fill" onclick="detApplyPaidState('full')">
               <i class="bi bi-check-circle me-1" aria-hidden="true"></i>שולם
+            </button>
+            <button type="button" id="detMarkPartialBtn" class="btn btn-outline-warning flex-fill text-dark" onclick="detApplyPaidState('partial')">
+              <i class="bi bi-circle-half me-1" aria-hidden="true"></i>תשלום חלקי
             </button>
             <button type="button" id="detMarkUnpaidBtn" class="btn btn-outline-danger flex-fill det-mark-unpaid-btn" onclick="detApplyPaidState(false)">
               <i class="bi bi-x-circle me-1" aria-hidden="true"></i>לא שולם
@@ -238,6 +297,11 @@
                   <input type="date" class="form-control" id="lessonDate" required />
                 </div>
               </div>
+            </div>
+
+            <div class="form-check form-check-reverse mb-2" id="lessonModalGroupWrap">
+              <input class="form-check-input" type="checkbox" id="lessonModalIsGroup" autocomplete="off" />
+              <label class="form-check-label small" for="lessonModalIsGroup">שיעור קבוצתי (מחיר ברירת מחדל לפי מסלול קבוצתי)</label>
             </div>
 
             <div class="mb-2 d-none" id="lessonTypeRow">

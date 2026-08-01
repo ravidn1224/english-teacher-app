@@ -101,6 +101,7 @@
   function applySummary(s) {
     setText('mr-val-lessons', String(s.lessons_done));
     setText('mr-val-fam-lessons', String(s.families_with_lessons));
+    setText('mr-val-hours', String(s.teaching_hours_display != null ? s.teaching_hours_display : '0'));
     setText('mr-val-paid', '₪' + s.month_paid);
     setText('mr-val-charge-sub', String(s.month_charge));
     setEndVisual(s.end_balance_sum);

@@ -9,7 +9,7 @@
         <i class="bi bi-arrow-right-short me-1" aria-hidden="true"></i>חזרה לתלמידים
       </a>
       <button type="submit" form="studentEditForm" class="btn btn-primary text-nowrap">
-        <i class="bi bi-check-lg me-1" aria-hidden="true"></i>שמור פרטים
+        <i class="bi bi-check-lg me-1" aria-hidden="true"></i>שמירת שינויים
       </button>
     </div>
     <button type="button" class="btn btn-outline-danger text-nowrap student-detail-delete"
@@ -18,7 +18,19 @@
     </button>
   </div>
 
-  <h1 class="h3 mb-3" id="student-detail-heading">{{ student.first_name }} {{ student.last_name }}</h1>
+  <h1 class="h3 mb-2 d-flex flex-wrap align-items-center gap-2" id="student-detail-heading">
+    <span>{{ student.first_name }} {{ student.last_name }}</span>
+    {% if student.lesson_type == 'group' %}
+    <span class="badge rounded-pill text-bg-secondary fw-normal" title="ברירת מחדל במערכת: שיעור קבוצתי">שיעור קבוצתי כברירת מחדל</span>
+    {% else %}
+    <span class="badge rounded-pill text-bg-light border fw-normal text-muted" title="ברירת מחדל במערכת: שיעור פרטי">שיעור פרטי כברירת מחדל</span>
+    {% endif %}
+  </h1>
+  <div class="student-detail-guide mb-3" role="note">
+    <div><i class="bi bi-1-circle-fill" aria-hidden="true"></i><span>עדכני פרטים ומחיר</span></div>
+    <div><i class="bi bi-2-circle-fill" aria-hidden="true"></i><span>הוסיפי שיעור קבוע אם צריך</span></div>
+    <div><i class="bi bi-3-circle-fill" aria-hidden="true"></i><span>בדקי היסטוריה ותשלומים</span></div>
+  </div>
 
   <form id="deleteForm" method="post" action="/students/{{ student.id }}/delete" class="d-none"></form>
 
@@ -26,9 +38,10 @@
     {# ב־RTL העמודה הראשונה מוצגת מימין: פרטים + חוזרים #}
     <div class="col-lg-5 col-xl-4 student-detail-col student-detail-col--main">
       <!-- פרטי תלמיד -->
-      <div class="card shadow-sm mb-3 student-detail-card">
-        <div class="card-header py-2 px-3 fw-semibold small text-white student-detail-card-header--green">
-          פרטי תלמיד
+      <div class="card shadow-sm mb-3 student-detail-card student-detail-card--profile">
+        <div class="card-header py-2 px-3 fw-semibold small text-white d-flex flex-wrap align-items-center justify-content-between gap-1 student-detail-card-header--green">
+          <span>1. פרטי תלמיד/ה</span>
+          <span class="student-detail-card__hint">אפשר לשנות כאן וללחוץ ״שמירת שינויים״</span>
         </div>
         <div class="card-body p-3" id="student-details-form">
           <form id="studentEditForm" method="post" action="/students/{{ student.id }}/edit" class="student-detail-edit-form">
@@ -53,23 +66,43 @@
                      value="{{ student.parent_phone or '' }}" autocomplete="tel" />
             </div>
             <div class="mb-2">
-              <label class="form-label small mb-0" for="detailDefaultPrice">מחיר ברירת מחדל (₪)</label>
+              <div class="form-check form-check-reverse mb-2">
+                <input class="form-check-input" type="checkbox" name="lesson_type_group" value="1" id="detailLessonTypeGroup"
+                       {% if student.lesson_type == 'group' %}checked{% endif %} />
+                <label class="form-check-label small" for="detailLessonTypeGroup">ברירת מחדל: שיעור קבוצתי (מולאי מחיר קבוצתי בלוח)</label>
+              </div>
+            </div>
+            <div class="mb-2">
+              <label class="form-label small mb-0" for="detailDefaultPrice">מחיר ברירת מחדל — פרטי (₪)</label>
               <input type="number" class="form-control" id="detailDefaultPrice" name="default_price"
                      min="0" value="{{ student.default_price }}" />
+            </div>
+            <div class="mb-2">
+              <label class="form-label small mb-0" for="detailDefaultPriceGroup">מחיר ברירת מחדל — קבוצתי (₪)</label>
+              <input type="number" class="form-control" id="detailDefaultPriceGroup" name="default_price_group"
+                     min="0" value="{{ student.default_price_group or 0 }}" />
+              <p class="text-muted small mb-0 mt-1">
+                0 = המחיר הכללי שמוגדר בדף תלמידים.
+              </p>
             </div>
             <div class="mb-3">
               <label class="form-label small mb-0" for="detailNotes">הערות</label>
               <textarea class="form-control" id="detailNotes" name="notes" rows="2">{{ student.notes or '' }}</textarea>
+            </div>
+            <div class="student-detail-form-save">
+              <button type="submit" class="btn btn-primary">
+                <i class="bi bi-check-lg me-1" aria-hidden="true"></i>שמירת שינויים
+              </button>
             </div>
           </form>
         </div>
       </div>
 
       <!-- שיעורים חוזרים -->
-      <div class="card shadow-sm student-detail-card">
+      <div class="card shadow-sm student-detail-card student-detail-card--schedule">
         <div class="card-header py-2 px-3 fw-semibold small text-white d-flex align-items-center gap-2 student-detail-card-header--gray">
           <i class="bi bi-clock-history" aria-hidden="true"></i>
-          שיעורים חוזרים
+          2. שיעורים קבועים
         </div>
         <div class="card-body p-3">
           {% if student.schedules %}
@@ -138,10 +171,10 @@
 
     {# עמודה שנייה — משמאל ב־RTL: היסטוריה #}
     <div class="col-lg-7 col-xl-8 student-detail-col student-detail-col--history">
-      <div class="card shadow-sm student-detail-card student-detail-card--history h-100">
+      <div class="card shadow-sm student-detail-card student-detail-card--history">
         <div class="card-header py-2 px-3 fw-semibold small text-white d-flex align-items-center gap-2 student-detail-card-header--gray">
           <i class="bi bi-list-ul" aria-hidden="true"></i>
-          היסטוריית שיעורים
+          3. היסטוריית שיעורים ותשלומים
         </div>
         <div class="card-body p-0">
           {% if lessons %}

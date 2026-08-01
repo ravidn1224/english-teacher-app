@@ -39,6 +39,11 @@
     </div>
   </div>
 
+  <div class="monthly-report-guide no-print mb-4" role="note">
+    <i class="bi bi-lightbulb-fill" aria-hidden="true"></i>
+    <span><strong>איך לקרוא את הדוח?</strong> התחילי ב״עם חוב״ כדי לראות מי דורש טיפול. לחיצה על משפחה פותחת את הפירוט.</span>
+  </div>
+
   <div class="monthly-summary-grid mb-4" id="mr-summary-grid">
     <div class="monthly-stat-card">
       <div class="monthly-stat-card__icon text-primary"><i class="bi bi-journal-bookmark"></i></div>
@@ -46,6 +51,14 @@
         <div class="monthly-stat-card__label">שיעורים שבוצעו</div>
         <div class="monthly-stat-card__value" id="mr-val-lessons">{{ summary.lessons_done }}</div>
         <div class="monthly-stat-card__sub"><span id="mr-val-fam-lessons">{{ summary.families_with_lessons }}</span> משפחות</div>
+      </div>
+    </div>
+    <div class="monthly-stat-card">
+      <div class="monthly-stat-card__icon text-info"><i class="bi bi-clock-history"></i></div>
+      <div>
+        <div class="monthly-stat-card__label">שעות הוראה</div>
+        <div class="monthly-stat-card__value" id="mr-val-hours">{{ summary.teaching_hours_display }}</div>
+        <div class="monthly-stat-card__sub">זמן שעון — חלון תאריך+שעה נספר פעם אחת (שיעור קבוצתי עם כמה תלמידים לא מוכפל)</div>
       </div>
     </div>
     <div class="monthly-stat-card">
@@ -185,7 +198,7 @@
                 </thead>
                 <tbody>
                   {% for lesson in st.lessons %}
-                  <tr class="monthly-lesson-row monthly-lesson-row--{{ lesson.row_class }}">
+                  <tr class="monthly-lesson-row">
                     <td class="fw-semibold">{{ lesson.lesson_date.strftime('%d/%m/%Y') }}</td>
                     <td class="text-muted">{{ lesson.start_time.strftime('%H:%M') }}–{{ lesson.end_time.strftime('%H:%M') }}</td>
                     <td>{{ lesson.type_he }}</td>

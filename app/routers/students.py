@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from ..database import get_db
 from .. import models
 from .. import family_utils
+from ..app_settings import get_default_lesson_prices, set_default_lesson_prices
 from ..templating import templates
 
 router = APIRouter(prefix="/students", tags=["students"])
@@ -96,6 +97,31 @@ def _family_groups_from_students(students: List[models.Student]) -> List[Dict[st
     return groups
 
 
+def _apply_student_rows_for_global_price_change(
+    db: Session,
+    old_ind: int,
+    old_grp: int,
+    mode: str,
+) -> None:
+    """When globals change: either snapshot old rates on «default» students or clear to follow new globals."""
+    mode = (mode or "").strip().lower()
+    if mode not in ("propagate", "grandfather"):
+        return
+    for s in db.query(models.Student).all():
+        dp = int(getattr(s, "default_price", 0) or 0)
+        dg = int(getattr(s, "default_price_group", 0) or 0)
+        if mode == "propagate":
+            if dp == 0 or dp == old_ind:
+                s.default_price = 0
+            if dg == 0 or dg == old_grp:
+                s.default_price_group = 0
+        else:
+            if dp == 0 or dp == old_ind:
+                s.default_price = old_ind
+            if dg == 0 or dg == old_grp:
+                s.default_price_group = old_grp
+
+
 @router.get("/", response_class=HTMLResponse)
 def list_students(request: Request, db: Session = Depends(get_db)):
     students = (
@@ -105,6 +131,7 @@ def list_students(request: Request, db: Session = Depends(get_db)):
         .all()
     )
     student_families = _family_groups_from_students(students)
+    g_ind, g_grp = get_default_lesson_prices(db)
     return templates.TemplateResponse(
         "students.html",
         {
@@ -112,8 +139,30 @@ def list_students(request: Request, db: Session = Depends(get_db)):
             "student_families": student_families,
             "day_names": DAY_NAMES,
             "day_names_short": DAY_NAMES_SHORT,
+            "global_default_individual": g_ind,
+            "global_default_group": g_grp,
         },
     )
+
+
+@router.post("/settings/default-prices")
+def save_global_default_prices(
+    default_lesson_individual: int = Form(0),
+    default_lesson_group: int = Form(0),
+    defaults_change_mode: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+):
+    new_ind = max(0, int(default_lesson_individual))
+    new_grp = max(0, int(default_lesson_group))
+    old_ind, old_grp = get_default_lesson_prices(db)
+    changed = (old_ind != new_ind) or (old_grp != new_grp)
+    if changed:
+        _apply_student_rows_for_global_price_change(
+            db, old_ind, old_grp, (defaults_change_mode or "").strip().lower()
+        )
+    set_default_lesson_prices(db, new_ind, new_grp)
+    db.commit()
+    return RedirectResponse(url="/students/", status_code=303)
 
 
 @router.get("/new", response_class=HTMLResponse)
@@ -123,13 +172,16 @@ def new_student_form(
     parent_phone: Optional[str] = None,
     default_price: Optional[int] = None,
     last_name: Optional[str] = None,
+    db: Session = Depends(get_db),
 ):
     prefill_pn = (parent_name or "").strip()
     prefill_pp = (parent_phone or "").strip()
     prefill_ln = (last_name or "").strip()
-    prefill_price = default_price if default_price is not None else None
-    if prefill_price is not None and prefill_price < 0:
-        prefill_price = 0
+    g_ind, g_grp = get_default_lesson_prices(db)
+    if default_price is not None:
+        prefill_price = max(0, int(default_price))
+    else:
+        prefill_price = g_ind
     return templates.TemplateResponse(
         "student_form.html",
         {
@@ -141,8 +193,17 @@ def new_student_form(
             "prefill_parent_phone": prefill_pp,
             "prefill_last_name": prefill_ln,
             "prefill_default_price": prefill_price,
+            "global_default_individual": g_ind,
+            "global_default_group": g_grp,
         },
     )
+
+
+def _form_lesson_type_group(raw: Optional[str]) -> str:
+    s = (raw or "").strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return "group"
+    return "individual"
 
 
 @router.post("/new")
@@ -153,6 +214,8 @@ def create_student(
     parent_name: str = Form(""),
     parent_phone: str = Form(""),
     default_price: int = Form(0),
+    default_price_group: int = Form(0),
+    lesson_type_group: Optional[str] = Form(None),
     notes: str = Form(""),
     db: Session = Depends(get_db),
 ):
@@ -161,7 +224,9 @@ def create_student(
         last_name=last_name,
         parent_name=parent_name,
         parent_phone=parent_phone,
-        default_price=default_price,
+        lesson_type=_form_lesson_type_group(lesson_type_group),
+        default_price=max(0, int(default_price)),
+        default_price_group=max(0, int(default_price_group)),
         notes=notes,
     )
     db.add(student)
@@ -185,9 +250,14 @@ def student_detail(request: Request, student_id: int, db: Session = Depends(get_
     lessons = (
         db.query(models.Lesson)
         .filter(models.Lesson.student_id == student_id)
-        .order_by(models.Lesson.lesson_date.desc())
+        .order_by(
+            models.Lesson.lesson_date.desc(),
+            models.Lesson.start_time.desc(),
+            models.Lesson.id.desc(),
+        )
         .all()
     )
+    g_ind, g_grp = get_default_lesson_prices(db)
     return templates.TemplateResponse(
         "student_detail.html",
         {
@@ -196,6 +266,8 @@ def student_detail(request: Request, student_id: int, db: Session = Depends(get_
             "lessons": lessons,
             "day_names": DAY_NAMES,
             "default_recur_start": date.today().isoformat(),
+            "global_default_individual": g_ind,
+            "global_default_group": g_grp,
         },
     )
 
@@ -229,30 +301,68 @@ def update_student(
     parent_name: str = Form(""),
     parent_phone: str = Form(""),
     default_price: int = Form(0),
+    default_price_group: int = Form(0),
+    lesson_type_group: Optional[str] = Form(None),
     notes: str = Form(""),
     db: Session = Depends(get_db),
 ):
     student = db.query(models.Student).filter(models.Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="תלמיד לא נמצא")
+    old_family_id = student.family_id
+    phone_changed = _normalize_phone(student.parent_phone) != _normalize_phone(parent_phone)
     student.first_name = first_name
     student.last_name = last_name
     student.parent_name = parent_name
     student.parent_phone = parent_phone
-    student.default_price = default_price
+    student.lesson_type = _form_lesson_type_group(lesson_type_group)
+    student.default_price = max(0, int(default_price))
+    student.default_price_group = max(0, int(default_price_group))
     student.notes = notes
+    if phone_changed:
+        # Family membership is defined by the parent phone.  Re-resolve it when
+        # the phone changes so the directory and the financial reports agree.
+        student.family_id = None
     if not student.family_id:
         family_utils.get_or_create_family_for_student(db, student, models)
+    db.flush()
+    family_ids_to_sync = {fid for fid in (old_family_id, student.family_id) if fid}
+    if family_ids_to_sync:
+        from .lessons import _recompute_family_balance_from_lessons
+
+        for family_id in family_ids_to_sync:
+            family = db.query(models.Family).filter(models.Family.id == family_id).first()
+            if family:
+                family.balance = _recompute_family_balance_from_lessons(db, family_id)
     db.commit()
     return RedirectResponse(url=f"/students/{student_id}", status_code=303)
 
 
 @router.post("/{student_id}/delete")
 def delete_student(student_id: int, db: Session = Depends(get_db)):
+    from .lessons import (
+        _delete_balance_transactions_for_lesson,
+        _recompute_family_balance_from_lessons,
+    )
+
     student = db.query(models.Student).filter(models.Student.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="תלמיד לא נמצא")
+    family_id = student.family_id
+    lesson_ids = [
+        row[0]
+        for row in db.query(models.Lesson.id)
+        .filter(models.Lesson.student_id == student_id)
+        .all()
+    ]
+    for lid in lesson_ids:
+        _delete_balance_transactions_for_lesson(db, lid)
     db.delete(student)
+    db.flush()
+    if family_id:
+        fam = db.query(models.Family).filter(models.Family.id == family_id).first()
+        if fam:
+            fam.balance = _recompute_family_balance_from_lessons(db, family_id)
     db.commit()
     return RedirectResponse(url="/students/", status_code=303)
 
@@ -293,7 +403,12 @@ def add_schedule(
 
 @router.post("/{student_id}/schedule/{sched_id}/delete")
 def delete_schedule(student_id: int, sched_id: int, db: Session = Depends(get_db)):
-    sched = db.query(models.RegularSchedule).filter(models.RegularSchedule.id == sched_id).first()
+    sched = (
+        db.query(models.RegularSchedule)
+        .filter(models.RegularSchedule.id == sched_id)
+        .filter(models.RegularSchedule.student_id == student_id)
+        .first()
+    )
     if sched:
         db.delete(sched)
         db.commit()

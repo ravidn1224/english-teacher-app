@@ -7,7 +7,7 @@
     <div class="d-flex flex-column flex-md-row flex-md-wrap align-items-stretch align-items-md-center justify-content-between gap-2 gap-md-3">
       <div class="students-page__title-block min-w-0">
         <h1 class="page-title mb-0"><i class="bi bi-people-fill me-2 text-primary"></i>תלמידים</h1>
-        <p class="text-muted mb-0 students-page-hint">אותו טלפון להורה = משפחה אחת · חיפוש מהיר למטה</p>
+        <p class="text-muted mb-0 students-page-hint">חפשי תלמיד או הורה · תלמידים מאותה משפחה מוצגים יחד</p>
       </div>
       <div class="d-flex flex-wrap align-items-center gap-2 students-page__controls">
         {% if student_families %}
@@ -17,9 +17,64 @@
           <input type="search" id="studentDirectorySearch" class="form-control" placeholder="חיפוש שם / הורה / טלפון" autocomplete="off" />
         </div>
         {% endif %}
-        <a href="/students/new" class="btn btn-primary btn-sm px-3 text-nowrap" title="הוספת תלמיד חדש">
-          <i class="bi bi-person-plus-fill me-1"></i>חדש
+        <a href="/students/new" class="btn btn-primary px-3 text-nowrap" title="הוספת תלמיד חדש">
+          <i class="bi bi-person-plus-fill me-1" aria-hidden="true"></i>הוספת תלמיד/ה
         </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="card border shadow-sm mb-3 students-global-defaults">
+    <div class="card-body py-3 px-3">
+      <form method="post" action="/students/settings/default-prices" id="studentsGlobalDefaultsForm" class="row g-3 align-items-end"
+            data-orig-ind="{{ global_default_individual }}" data-orig-grp="{{ global_default_group }}">
+        <input type="hidden" name="defaults_change_mode" id="defaultsChangeMode" value="" />
+        <div class="col-12 d-flex flex-wrap align-items-start justify-content-between gap-2">
+          <div>
+            <h2 class="h6 mb-0 fw-semibold">ברירות מחדל למחיר שיעור (כללי)</h2>
+            <p class="text-muted small mb-0 mt-1">ברירת המחדל חלה על כל התלמידים — עד שהמורה ממלאת מחיר אישי בכרטיס (0 = עדיין לפי הכללי). שינוי המחירים הכלליים יציע לעדכן תלמידים שעדיין לפי ברירת המחדל.</p>
+          </div>
+          <button type="button" class="btn btn-outline-secondary btn-sm" id="globalDefaultsEditBtn">
+            <i class="bi bi-pencil-square me-1" aria-hidden="true"></i>עריכה
+          </button>
+        </div>
+        <div class="col-6 col-md-4 col-lg-3">
+          <label class="form-label small mb-1" for="globalDefaultIndividual">שיעור פרטי (₪)</label>
+          <input type="number" class="form-control form-control-sm students-global-price-input" id="globalDefaultIndividual" name="default_lesson_individual" min="0" step="1" value="{{ global_default_individual }}" readonly inputmode="numeric" />
+        </div>
+        <div class="col-6 col-md-4 col-lg-3">
+          <label class="form-label small mb-1" for="globalDefaultGroup">שיעור קבוצתי (₪)</label>
+          <input type="number" class="form-control form-control-sm students-global-price-input" id="globalDefaultGroup" name="default_lesson_group" min="0" step="1" value="{{ global_default_group }}" readonly inputmode="numeric" />
+        </div>
+        <div class="col-12 col-md-auto d-flex flex-wrap gap-2 align-items-center">
+          <button type="submit" class="btn btn-outline-primary btn-sm d-none" id="globalDefaultsSaveBtn">שמור ברירות מחדל</button>
+          <button type="button" class="btn btn-link btn-sm text-muted d-none px-2" id="globalDefaultsCancelBtn">ביטול</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div class="modal fade" id="globalDefaultsChangeModal" tabindex="-1" aria-labelledby="globalDefaultsChangeModalTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content">
+        <div class="modal-header border-0 pb-0">
+          <h2 class="modal-title h5" id="globalDefaultsChangeModalTitle">שינוי ברירות המחדל</h2>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="סגור"></button>
+        </div>
+        <div class="modal-body pt-2">
+          <p class="mb-3">המחירים הכלליים השתנו. איך לטפל בתלמידים ש<strong>לא</strong> הגדירו מחיר אישי (0 או המחיר הישן הכללי בכרטיס)?</p>
+          <ul class="small text-muted mb-0 ps-3">
+            <li class="mb-2"><strong>לעדכן גם תלמידים</strong> — ימשיכו לפי הברירות החדשות (המחירים בכרטיס יתאפסו ל־0 אם היו העתק של הישן).</li>
+            <li><strong>רק ברירה כללית</strong> — המחיר הישן נשמר אוטומטית אצל כל מי שהיה לפי ברירת המחדל; תלמידים חדשים יקבלו את המחיר החדש.</li>
+          </ul>
+        </div>
+        <div class="modal-footer flex-wrap border-0 gap-2 justify-content-between">
+          <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">ביטול</button>
+          <div class="d-flex flex-wrap gap-2">
+            <button type="button" class="btn btn-outline-primary" id="globalDefaultsGrandfatherBtn">רק ברירה כללית</button>
+            <button type="button" class="btn btn-primary" id="globalDefaultsPropagateBtn">לעדכן גם תלמידים</button>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -49,7 +104,7 @@
           {% set _fam_parent = fam.parent_names | join(' · ') %}
           {% set _fam_last = fam.members[0].last_name or '' %}
           <a class="btn btn-outline-primary btn-sm student-family-quickadd"
-             href="/students/new?{% if fam.phone_display %}parent_phone={{ fam.phone_display|urlquote }}&amp;{% endif %}parent_name={{ _fam_parent|urlquote }}&amp;default_price={{ fam.members[0].default_price }}&amp;last_name={{ _fam_last|urlquote }}"
+             href="/students/new?{% if fam.phone_display %}parent_phone={{ fam.phone_display|urlquote }}&amp;{% endif %}parent_name={{ _fam_parent|urlquote }}&amp;default_price={{ fam.members[0].default_price or global_default_individual }}&amp;last_name={{ _fam_last|urlquote }}"
              title="הוספת ילד/ה לאותה משפחה">
             <i class="bi bi-person-plus" aria-hidden="true"></i><span class="ms-1 student-family-quickadd__label">הוסף ילד למשפחה</span>
           </a>
@@ -66,13 +121,21 @@
     <div class="student-family-shell__body">
       <div class="row g-2 student-cards-row">
         {% for student in fam.members %}
+        {% set ep = student.default_price if student.default_price > 0 else global_default_individual %}
+        {% set eg = student.default_price_group if student.default_price_group > 0 else global_default_group %}
+        {% set current_price = eg if student.lesson_type == 'group' else ep %}
         <div class="col-12 col-sm-6 col-md-4 col-lg-3 col-xl-3 col-xxl-2">
           <div class="student-card h-100 student-card--in-family">
             <div class="d-flex justify-content-between align-items-start gap-1">
-              <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
-              <span class="price-tag flex-shrink-0" title="מחיר לשיעור">
-                <span class="price-tag__amount">{{ student.default_price }}₪</span>
-                <span class="price-tag__suffix">לשיעור</span>
+              <div class="min-w-0 flex-grow-1">
+                <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
+                {% if student.lesson_type == 'group' %}
+                <span class="badge rounded-pill text-bg-secondary mt-1" style="font-size:0.7rem">שיעור קבוצתי</span>
+                {% endif %}
+              </div>
+              <span class="price-tag flex-shrink-0 text-end" title="פרטי {{ ep }}₪ · קבוצה {{ eg }}₪">
+                <span class="price-tag__amount">{{ current_price }}₪</span>
+                <span class="price-tag__suffix d-block small text-muted" style="font-size:0.7rem">{% if student.lesson_type == 'group' %}קבוצתי{% else %}פרטי{% endif %}</span>
               </span>
             </div>
             {% if student.notes %}
@@ -85,7 +148,7 @@
               {% if student.schedules %}
                 {% for sched in student.schedules %}
                 <span class="schedule-badge text-truncate d-inline-block" style="max-width: 100%" title="יום {{ day_names[sched.day_of_week] }} {{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}">
-                  {{ day_names_short[sched.day_of_week] }} {{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}
+                  {{ day_names_short[sched.day_of_week] }} <span class="schedule-badge__time" dir="ltr">{{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}</span>
                 </span>
                 {% endfor %}
               {% else %}
@@ -93,7 +156,7 @@
               {% endif %}
             </div>
             <div class="mt-auto d-flex gap-1 student-card__actions justify-content-end">
-              <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 student-card__menu-btn flex-shrink-0" title="פרטים ועריכה" aria-label="פרטי תלמיד"><i class="bi bi-list" aria-hidden="true"></i></a>
+              <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 student-card__menu-btn flex-shrink-0" title="פרטים ועריכה"><i class="bi bi-pencil-square me-1" aria-hidden="true"></i>כרטיס תלמיד</a>
             </div>
           </div>
         </div>
@@ -104,13 +167,21 @@
   {% else %}
   <div class="row g-2 student-cards-row">
     {% for student in fam.members %}
+    {% set ep = student.default_price if student.default_price > 0 else global_default_individual %}
+    {% set eg = student.default_price_group if student.default_price_group > 0 else global_default_group %}
+    {% set current_price = eg if student.lesson_type == 'group' else ep %}
     <div class="col-12 col-sm-6 col-md-4 col-lg-3 col-xl-3 col-xxl-2">
       <div class="student-card h-100">
         <div class="d-flex justify-content-between align-items-start gap-1">
-          <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
-          <span class="price-tag flex-shrink-0" title="מחיר לשיעור">
-            <span class="price-tag__amount">{{ student.default_price }}₪</span>
-            <span class="price-tag__suffix">לשיעור</span>
+          <div class="min-w-0 flex-grow-1">
+            <div class="card-name text-truncate" title="{{ student.first_name }} {{ student.last_name }}">{{ student.first_name }} {{ student.last_name }}</div>
+            {% if student.lesson_type == 'group' %}
+            <span class="badge rounded-pill text-bg-secondary mt-1" style="font-size:0.7rem">שיעור קבוצתי</span>
+            {% endif %}
+          </div>
+          <span class="price-tag flex-shrink-0 text-end" title="פרטי {{ ep }}₪ · קבוצה {{ eg }}₪">
+            <span class="price-tag__amount">{{ current_price }}₪</span>
+            <span class="price-tag__suffix d-block small text-muted" style="font-size:0.7rem">{% if student.lesson_type == 'group' %}קבוצתי{% else %}פרטי{% endif %}</span>
           </span>
         </div>
         {% if student.parent_name or student.parent_phone %}
@@ -126,7 +197,7 @@
         {% set _solo_parent = (student.parent_name or '')|trim %}
         {% set _solo_last = student.last_name or '' %}
         <a class="btn btn-outline-primary btn-sm student-family-quickadd student-card-solo-quickadd w-100 mt-1"
-           href="/students/new?{% if student.parent_phone %}parent_phone={{ student.parent_phone|urlquote }}&amp;{% endif %}parent_name={{ _solo_parent|urlquote }}&amp;default_price={{ student.default_price }}&amp;last_name={{ _solo_last|urlquote }}"
+           href="/students/new?{% if student.parent_phone %}parent_phone={{ student.parent_phone|urlquote }}&amp;{% endif %}parent_name={{ _solo_parent|urlquote }}&amp;default_price={{ student.default_price or global_default_individual }}&amp;last_name={{ _solo_last|urlquote }}"
            title="הוספת ילד/ה לאותה משפחה">
           <i class="bi bi-person-plus" aria-hidden="true"></i><span class="ms-1 student-family-quickadd__label">הוסף ילד למשפחה</span>
         </a>
@@ -141,7 +212,7 @@
           {% if student.schedules %}
             {% for sched in student.schedules %}
             <span class="schedule-badge text-truncate d-inline-block" style="max-width: 100%" title="יום {{ day_names[sched.day_of_week] }} {{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}">
-              {{ day_names_short[sched.day_of_week] }} {{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}
+              {{ day_names_short[sched.day_of_week] }} <span class="schedule-badge__time" dir="ltr">{{ sched.start_time.strftime('%H:%M') }}–{{ sched.end_time.strftime('%H:%M') }}</span>
             </span>
             {% endfor %}
           {% else %}
@@ -149,7 +220,7 @@
           {% endif %}
         </div>
         <div class="mt-auto d-flex gap-1 student-card__actions justify-content-end">
-          <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 student-card__menu-btn flex-shrink-0" title="פרטים ועריכה" aria-label="פרטי תלמיד"><i class="bi bi-list" aria-hidden="true"></i></a>
+          <a href="/students/{{ student.id }}" class="btn btn-primary btn-sm px-2 student-card__menu-btn flex-shrink-0" title="פרטים ועריכה"><i class="bi bi-pencil-square me-1" aria-hidden="true"></i>כרטיס תלמיד</a>
         </div>
       </div>
     </div>
@@ -173,6 +244,107 @@
 {% endblock %}
 
 {% block scripts %}
+<script>
+(function () {
+  var form = document.getElementById('studentsGlobalDefaultsForm');
+  if (!form) return;
+  var ind = document.getElementById('globalDefaultIndividual');
+  var grp = document.getElementById('globalDefaultGroup');
+  var btnEdit = document.getElementById('globalDefaultsEditBtn');
+  var btnSave = document.getElementById('globalDefaultsSaveBtn');
+  var btnCancel = document.getElementById('globalDefaultsCancelBtn');
+  if (!ind || !grp || !btnEdit || !btnSave || !btnCancel) return;
+
+  function lockState() {
+    ind.setAttribute('readonly', 'readonly');
+    grp.setAttribute('readonly', 'readonly');
+    ind.classList.add('students-global-price-input--locked');
+    grp.classList.add('students-global-price-input--locked');
+    btnEdit.classList.remove('d-none');
+    btnSave.classList.add('d-none');
+    btnCancel.classList.add('d-none');
+  }
+
+  function editState() {
+    ind.removeAttribute('readonly');
+    grp.removeAttribute('readonly');
+    ind.classList.remove('students-global-price-input--locked');
+    grp.classList.remove('students-global-price-input--locked');
+    btnEdit.classList.add('d-none');
+    btnSave.classList.remove('d-none');
+    btnCancel.classList.remove('d-none');
+    try {
+      ind.focus();
+    } catch (e) { /* ignore */ }
+  }
+
+  function restoreFromDataset() {
+    ind.value = form.getAttribute('data-orig-ind') || '0';
+    grp.value = form.getAttribute('data-orig-grp') || '0';
+  }
+
+  btnEdit.addEventListener('click', function () {
+    editState();
+  });
+  btnCancel.addEventListener('click', function () {
+    restoreFromDataset();
+    lockState();
+  });
+
+  var modeInput = document.getElementById('defaultsChangeMode');
+  var changeModalEl = document.getElementById('globalDefaultsChangeModal');
+  var changeModal = changeModalEl && typeof bootstrap !== 'undefined' ? bootstrap.Modal.getOrCreateInstance(changeModalEl) : null;
+
+  function parseNonNeg(el) {
+    var v = parseInt(String(el && el.value != null ? el.value : '0').trim(), 10);
+    return Number.isFinite(v) && v >= 0 ? v : 0;
+  }
+
+  function valuesChanged() {
+    var oi = parseInt(String(form.getAttribute('data-orig-ind') || '0'), 10);
+    var og = parseInt(String(form.getAttribute('data-orig-grp') || '0'), 10);
+    if (!Number.isFinite(oi) || oi < 0) oi = 0;
+    if (!Number.isFinite(og) || og < 0) og = 0;
+    return parseNonNeg(ind) !== oi || parseNonNeg(grp) !== og;
+  }
+
+  function submitWithMode(mode) {
+    if (modeInput) modeInput.value = mode;
+    if (changeModal) changeModal.hide();
+    form.submit();
+  }
+
+  var btnProp = document.getElementById('globalDefaultsPropagateBtn');
+  var btnGrand = document.getElementById('globalDefaultsGrandfatherBtn');
+  if (btnProp) {
+    btnProp.addEventListener('click', function () {
+      submitWithMode('propagate');
+    });
+  }
+  if (btnGrand) {
+    btnGrand.addEventListener('click', function () {
+      submitWithMode('grandfather');
+    });
+  }
+
+  form.addEventListener('submit', function (e) {
+    if (modeInput) modeInput.value = '';
+    if (!valuesChanged()) return;
+    e.preventDefault();
+    if (!changeModal) {
+      if (!window.confirm('המחירים הכלליים השתנו. לעדכן גם תלמידים לפי ברירת המחדל? אישור = כן, ביטול = רק ברירה כללית (שמירת המחיר הישן אצל תלמידים קיימים).')) {
+        submitWithMode('grandfather');
+      } else {
+        submitWithMode('propagate');
+      }
+      return;
+    }
+    changeModal.show();
+  });
+
+  lockState();
+})();
+</script>
 {% if student_families %}
 <script src="/static/js/students-directory.js?v={{ static_v('js/students-directory.js') }}"></script>
 {% endif %}

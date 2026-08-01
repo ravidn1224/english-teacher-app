@@ -17,7 +17,7 @@ Open a **Terminal** (on Mac: `Applications → Utilities → Terminal`), navigat
 
 ```bash
 cd "path/to/english-teacher-app"
-docker-compose up --build
+docker compose up --build
 ```
 
 Wait about 30–60 seconds. When you see:
@@ -35,13 +35,13 @@ Open your browser and go to: **http://localhost:8000**
 Each time you want to use the app:
 
 ```bash
-docker-compose up
+docker compose up
 ```
 
 To stop it:
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 ---
@@ -95,6 +95,14 @@ docker-compose down
 | DB Port | 5432 |
 
 Data is stored persistently in a Docker volume — it will survive restarts.
+
+After changing application code, rebuild once so the updated code is included:
+
+```bash
+docker compose up --build
+```
+
+The app is intentionally available only on this computer at `http://localhost:8000`.
 
 ---
 
