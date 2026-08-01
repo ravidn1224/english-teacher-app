@@ -6,6 +6,15 @@ from sqlalchemy.sql import func
 from .database import Base
 
 
+class AppSetting(Base):
+    """Singleton-style key/value rows (e.g. global default lesson prices)."""
+
+    __tablename__ = "app_settings"
+
+    key = Column(String(64), primary_key=True, index=True)
+    value = Column(String(255), nullable=False, default="")
+
+
 class Family(Base):
     __tablename__ = "families"
 
@@ -32,7 +41,9 @@ class Student(Base):
     parent_phone = Column(String(30))
     # individual → default charge style; group → lower default (UI / materialize)
     lesson_type = Column(String(20), nullable=False, default="individual")
-    default_price = Column(Integer, default=0)  # price in ILS per lesson
+    # Per-lesson defaults (0 = use global defaults for that track)
+    default_price = Column(Integer, default=0)  # private / one-on-one (ILS per lesson)
+    default_price_group = Column(Integer, default=0)  # group lesson (ILS per lesson)
     # Legacy per-student balance — kept for migration; use family.balance
     balance = Column(Integer, nullable=False, default=0)
     notes = Column(Text, default="")
@@ -80,6 +91,8 @@ class RegularSchedule(Base):
     day_of_month = Column(Integer, nullable=True)
     # First calendar day to emit virtual occurrences (NULL = no lower bound, legacy)
     recurring_start_date = Column(Date, nullable=True)
+    # Last calendar day to emit virtual occurrences; used when a schedule changes from a chosen date onward.
+    recurring_end_date = Column(Date, nullable=True)
 
     student = relationship("Student", back_populates="schedules")
 
@@ -111,6 +124,8 @@ class Lesson(Base):
     balance_applied = Column(Integer, nullable=False, default=0)
     # True after teacher chose שולם / לא שולם (affects balance for unpaid)
     payment_finalized = Column(Boolean, nullable=False, default=False)
+    # Overpay settled in cash — no credit carried to next lesson
+    change_given = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     student = relationship("Student", back_populates="lessons")

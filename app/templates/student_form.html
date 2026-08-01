@@ -2,11 +2,15 @@
 {% block title %}{% if action == "new" %}{% if prefill_parent_phone or prefill_parent_name %}הוסף ילד למשפחה{% else %}תלמיד חדש{% endif %}{% else %}עריכת תלמיד{% endif %}{% endblock %}
 
 {% block content %}
-<div class="row justify-content-center">
-  <div class="col-lg-8">
-    <div class="card shadow-sm">
-      <div class="card-header bg-primary text-white fs-4">
-        <i class="bi bi-person-fill me-2"></i>
+<div class="row justify-content-center student-form-page">
+  <div class="col-lg-8 col-xl-7">
+    <div class="student-form-intro mb-3">
+      <span class="student-form-intro__step">שלב אחד</span>
+      <p class="mb-0">מלאי את הפרטים הבסיסיים. תמיד אפשר לחזור ולערוך בהמשך.</p>
+    </div>
+    <div class="card shadow-sm student-form-card">
+      <div class="card-header bg-primary text-white fs-4 student-form-card__head">
+        <i class="bi bi-person-plus-fill me-2" aria-hidden="true"></i>
         {% if action == "new" %}
           {% if prefill_parent_phone or prefill_parent_name %}הוסף ילד למשפחה{% else %}הוספת תלמיד חדש{% endif %}
         {% else %}עריכת פרטי תלמיד{% endif %}
@@ -18,7 +22,10 @@
         </div>
         {% endif %}
         <form method="post" action="{% if action == 'new' %}/students/new{% else %}/students/{{ student.id }}/edit{% endif %}">
-          <div class="row g-3 mb-3">
+          <section class="student-form-section">
+          <h2 class="student-form-section__title"><i class="bi bi-person-vcard me-2" aria-hidden="true"></i>פרטי התלמיד/ה</h2>
+          <p class="student-form-section__hint">רק שם פרטי ושם משפחה הם חובה.</p>
+          <div class="row g-3 mb-4">
             <div class="col-md-6">
               <label class="form-label fs-5">שם פרטי *</label>
               <input type="text" class="form-control form-control-lg" name="first_name"
@@ -31,7 +38,9 @@
             </div>
           </div>
 
-          <div class="row g-3 mb-3">
+          <h2 class="student-form-section__title"><i class="bi bi-person-heart me-2" aria-hidden="true"></i>פרטי קשר של ההורה</h2>
+          <p class="student-form-section__hint">טלפון זהה יחבר את הילדים לאותה משפחה.</p>
+          <div class="row g-3 mb-4">
             <div class="col-md-6">
               <label class="form-label fs-5">שם הורה</label>
               <input type="text" class="form-control form-control-lg" name="parent_name"
@@ -44,22 +53,44 @@
             </div>
           </div>
 
-          <div class="row g-3 mb-3">
-            <div class="col-md-4">
-              <label class="form-label fs-5">מחיר ברירת מחדל לשיעור (₪)</label>
-              <input type="number" class="form-control form-control-lg" name="default_price" min="0"
-                     value="{% if student %}{{ student.default_price }}{% elif prefill_default_price is not none %}{{ prefill_default_price }}{% else %}0{% endif %}" />
+          </section>
+          <section class="student-form-section student-form-section--soft">
+          <h2 class="student-form-section__title"><i class="bi bi-cash-coin me-2" aria-hidden="true"></i>סוג שיעור ומחיר</h2>
+          <p class="student-form-section__hint">אפשר להשאיר 0 כדי להשתמש במחיר הכללי. אין צורך למלא מחיר אם הוא רגיל.</p>
+          <div class="mb-3">
+            <div class="form-check form-check-reverse mb-2">
+              <input class="form-check-input" type="checkbox" name="lesson_type_group" value="1" id="studentLessonTypeGroup"
+                     {% if student and student.lesson_type == 'group' %}checked{% endif %} />
+              <label class="form-check-label fs-6" for="studentLessonTypeGroup">ברירת מחדל: תלמיד/ה בשיעור קבוצתי</label>
             </div>
+            <p class="text-muted small mb-2">מסומן = מחיר ברירת המחדל בלוח וברשימה יהיה הקבוצתי; בלתי מסומן = שיעור פרטי.</p>
           </div>
 
-          <div class="mb-3">
+          <div class="row g-3 mb-3">
+            <div class="col-md-6">
+              <label class="form-label fs-5" for="defaultPricePrivate">מחיר ברירת מחדל — שיעור פרטי (₪)</label>
+              <input type="number" class="form-control form-control-lg" id="defaultPricePrivate" name="default_price" min="0"
+                     value="{% if student %}{{ student.default_price }}{% elif prefill_default_price is not none %}{{ prefill_default_price }}{% else %}0{% endif %}" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label fs-5" for="defaultPriceGroup">מחיר ברירת מחדל — שיעור קבוצתי (₪)</label>
+              <input type="number" class="form-control form-control-lg" id="defaultPriceGroup" name="default_price_group" min="0"
+                     value="{% if student %}{{ student.default_price_group or 0 }}{% else %}0{% endif %}" />
+            </div>
+          </div>
+          {% if action == 'new' %}
+          <p class="text-muted small mb-0">המחירים הכלליים כרגע: פרטי ‎₪{{ global_default_individual }} · קבוצתי ‎₪{{ global_default_group }}.</p>
+          {% endif %}
+          </section>
+
+          <div class="mb-4 mt-4">
             <label class="form-label fs-5">הערות</label>
             <textarea class="form-control" name="notes" rows="3">{{ student.notes if student else '' }}</textarea>
           </div>
 
-          <div class="d-flex gap-3">
-            <button type="submit" class="btn btn-primary btn-lg">
-              <i class="bi bi-check-lg me-1"></i>שמור
+          <div class="d-flex flex-column flex-sm-row gap-2 student-form-actions">
+            <button type="submit" class="btn btn-primary btn-lg px-4">
+              <i class="bi bi-check-lg me-1" aria-hidden="true"></i>שמירת תלמיד/ה
             </button>
             <a href="{% if student %}/students/{{ student.id }}{% else %}/students/{% endif %}"
                class="btn btn-secondary btn-lg">ביטול</a>

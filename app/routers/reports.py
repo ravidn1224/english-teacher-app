@@ -1,7 +1,7 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from calendar import monthrange
 from io import BytesIO
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 from ..database import get_db
 from .. import models
 from ..templating import templates
+from .lessons import _lesson_effective_paid_for_balance, _lesson_payment_net_for_balance
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -41,10 +42,9 @@ def _families_debt_report_data(
     start_d = date(year, month, 1)
     end_d = date(year, month, last_day)
 
-    indebted = (
+    families_with_students = (
         db.query(models.Family)
         .options(joinedload(models.Family.students))
-        .filter(models.Family.balance < 0)
         .order_by(models.Family.name)
         .all()
     )
@@ -52,8 +52,11 @@ def _families_debt_report_data(
     families: dict = {}
     grand_total = 0
 
-    for fam in indebted:
-        owed = -int(fam.balance or 0)
+    for fam in families_with_students:
+        # Family.balance is a cached convenience field.  Derive the export from
+        # lessons so a historical row can never make an exported debt stale.
+        live_balance = _family_balance_from_lessons_up_to(db, fam.id, date.today())
+        owed = -live_balance
         if owed <= 0:
             continue
         grand_total += owed
@@ -93,7 +96,7 @@ def _families_debt_report_data(
             "parent_phone": parent_phone,
             "lessons": lessons_in_month,
             "total": owed,
-            "family_balance": int(fam.balance or 0),
+            "family_balance": live_balance,
         }
 
     return families, grand_total
@@ -147,35 +150,8 @@ def _lesson_in_monthly_report(lesson: models.Lesson) -> bool:
 
 
 def _family_balance_on_or_before(db: Session, family_id: int, on_or_before: date) -> int:
-    tx = (
-        db.query(models.BalanceTransaction)
-        .filter(models.BalanceTransaction.family_id == family_id)
-        .filter(models.BalanceTransaction.txn_date <= on_or_before)
-        .order_by(
-            models.BalanceTransaction.txn_date.desc(),
-            models.BalanceTransaction.id.desc(),
-        )
-        .first()
-    )
-    if tx:
-        return int(tx.balance_after)
-    return 0
-
-
-def _lesson_net_aligned_with_calendar_balance(lesson: models.Lesson) -> int:
-    """Cash effect on balance — must stay aligned with lessons._lesson_payment_net_for_balance."""
-    if lesson.status == "cancelled":
-        return 0
-    c = int(lesson.price or 0)
-    if lesson.is_paid:
-        p = int(lesson.paid_amount) if lesson.paid_amount is not None else c
-        return p - c
-    if not bool(getattr(lesson, "payment_finalized", False)):
-        return 0
-    att = (getattr(lesson, "attendance", None) or "expected").lower()
-    if att == "no_show":
-        return 0
-    return -c
+    """Historical balance derived from lessons, not mutable ledger snapshots."""
+    return _family_balance_from_lessons_up_to(db, family_id, on_or_before)
 
 
 def _family_balance_from_lessons_up_to(db: Session, family_id: int, through: date) -> int:
@@ -202,10 +178,9 @@ def _family_balance_from_lessons_up_to(db: Session, family_id: int, through: dat
     )
     if not lessons:
         return 0
-    first_d = min(l.lesson_date for l in lessons)
-    bal = _family_balance_on_or_before(db, family_id, first_d - timedelta(days=1))
+    bal = 0
     for L in lessons:
-        bal += _lesson_net_aligned_with_calendar_balance(L)
+        bal += _lesson_payment_net_for_balance(L)
     return bal
 
 
@@ -251,8 +226,7 @@ def _family_opening_carry_at_month_start(
     if (year, month) < (fy, fm_m):
         py, pm = _shift_month(year, month, -1)
         return _family_balance_from_lessons_up_to(db, family_id, _last_day_of_month(py, pm))
-    py, pm = _shift_month(fy, fm_m, -1)
-    carry = _family_balance_on_or_before(db, family_id, _last_day_of_month(py, pm))
+    carry = 0
     y, m = fy, fm_m
     while (y, m) < (year, month):
         ch, pd = _family_reportable_lesson_totals(db, family_id, y, m)
@@ -283,20 +257,31 @@ def _chain_reset_during_month(db: Session, family_id: int, year: int, month: int
     py, pm = _shift_month(year, month, -1)
     prev_end = _last_day_of_month(py, pm)
     carry = _family_balance_on_or_before(db, family_id, prev_end)
-    mk = _month_key(year, month)
-    txs = (
-        db.query(models.BalanceTransaction)
-        .filter(models.BalanceTransaction.family_id == family_id)
-        .filter(models.BalanceTransaction.month_key == mk)
+    sids = [
+        row[0]
+        for row in db.query(models.Student.id)
+        .filter(models.Student.family_id == family_id)
+        .all()
+    ]
+    if not sids:
+        return carry >= 0
+    start_d = date(year, month, 1)
+    lessons = (
+        db.query(models.Lesson)
+        .filter(models.Lesson.student_id.in_(sids))
+        .filter(models.Lesson.lesson_date >= start_d)
+        .filter(models.Lesson.lesson_date <= _last_day_of_month(year, month))
+        .filter(models.Lesson.status != "cancelled")
         .order_by(
-            models.BalanceTransaction.txn_date.asc(),
-            models.BalanceTransaction.id.asc(),
+            models.Lesson.lesson_date.asc(),
+            models.Lesson.start_time.asc(),
+            models.Lesson.id.asc(),
         )
         .all()
     )
     running = carry
-    for tx in txs:
-        running += int(tx.balance_after) - int(tx.balance_before)
+    for lesson in lessons:
+        running += _lesson_payment_net_for_balance(lesson)
         if running >= 0:
             return True
     return running >= 0
@@ -356,18 +341,26 @@ def _lesson_type_label_he(lesson: models.Lesson) -> str:
     return "פרטי"
 
 
-def _lesson_paid_display(lesson: models.Lesson) -> int:
-    if lesson.is_paid:
-        if lesson.paid_amount is not None:
-            return int(lesson.paid_amount)
-        return int(lesson.price or 0)
-    return 0
+def _report_billable_charge(lesson: models.Lesson) -> int:
+    """חיוב בדוח: מחיר המורה רק כש«הגיע/ה»; «לא הגיע/ה» — אין חיוב."""
+    if lesson.status == "cancelled":
+        return 0
+    if (lesson.attendance or "expected").lower() != "arrived":
+        return 0
+    return int(lesson.price or 0)
+
+
+def _report_amount_paid(lesson: models.Lesson) -> int:
+    """סכום לחישוב יתרה בדוח: רק «הגיע/ה»; אם הוחזר עודף — נספר רק מחיר השיעור."""
+    if (lesson.attendance or "expected").lower() != "arrived":
+        return 0
+    return _lesson_effective_paid_for_balance(lesson)
 
 
 def _family_reportable_lesson_totals(
     db: Session, family_id: int, year: int, month: int
 ) -> Tuple[int, int]:
-    """חיוב/שולם לחודש לפי שיעורים בפועל — לא סכימת שורות יומן (כל עדכון הוסיף שורה מלאה)."""
+    """חיוב/שולם לחודש: מחיר מול שולם רק ל«הגיע/ה»; «לא הגיע/ה» לא נספר בחיוב (כמו בלוח)."""
     start_d = date(year, month, 1)
     end_d = _last_day_of_month(year, month)
     sids = [
@@ -391,22 +384,9 @@ def _family_reportable_lesson_totals(
     for L in lessons:
         if not _lesson_in_monthly_report(L):
             continue
-        ch += int(L.price or 0)
-        pd += _lesson_paid_display(L)
+        ch += _report_billable_charge(L)
+        pd += _report_amount_paid(L)
     return ch, pd
-
-
-def _lesson_row_class(lesson: models.Lesson) -> str:
-    charge = int(lesson.price or 0)
-    fin = bool(getattr(lesson, "payment_finalized", False))
-    if not fin and not lesson.is_paid:
-        return "pending"
-    paid = _lesson_paid_display(lesson)
-    if not lesson.is_paid:
-        return "unpaid"
-    if paid < charge:
-        return "partial"
-    return "paid"
 
 
 def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[str, Any]:
@@ -426,6 +406,8 @@ def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[st
     total_month_paid = 0
     total_end = 0
     lessons_done_count = 0
+    total_teaching_hours = 0.0
+    teaching_hours_slots_seen: Set[Tuple[date, time, time]] = set()
     families_with_lessons: set[int] = set()
 
     for fam in all_families:
@@ -457,8 +439,12 @@ def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[st
         total_month_paid += snap["month_paid"]
         total_end += snap["end_balance"]
 
-        for _ in report_lessons:
+        for L in report_lessons:
             lessons_done_count += 1
+            slot_key = (L.lesson_date, L.start_time, L.end_time)
+            if slot_key not in teaching_hours_slots_seen:
+                teaching_hours_slots_seen.add(slot_key)
+                total_teaching_hours += _lesson_duration_hours(L)
 
         contact_name = (fam.contact_name or "").strip()
         phone = (fam.phone or "").strip()
@@ -482,8 +468,8 @@ def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[st
         students_out: List[dict[str, Any]] = []
         for st in sorted(fam.students, key=lambda x: (x.last_name, x.first_name)):
             st_lessons = [L for L in report_lessons if L.student_id == st.id]
-            ch_sum = sum(int(L.price or 0) for L in st_lessons)
-            pd_sum = sum(_lesson_paid_display(L) for L in st_lessons)
+            ch_sum = sum(_report_billable_charge(L) for L in st_lessons)
+            pd_sum = sum(_report_amount_paid(L) for L in st_lessons)
             lesson_rows = []
             for L in st_lessons:
                 lesson_rows.append(
@@ -491,15 +477,14 @@ def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[st
                         "lesson_date": L.lesson_date,
                         "start_time": L.start_time,
                         "end_time": L.end_time,
-                        "price": int(L.price or 0),
-                        "paid_display": _lesson_paid_display(L),
+                        "price": _report_billable_charge(L),
+                        "paid_display": _report_amount_paid(L),
                         "is_paid": bool(L.is_paid),
                         "payment_method": (L.payment_method or "").strip(),
                         "type_he": _lesson_type_label_he(L),
                         "method_he": _payment_method_label_he(L.payment_method)
                         if L.is_paid
                         else "",
-                        "row_class": _lesson_row_class(L),
                     }
                 )
             students_out.append(
@@ -547,6 +532,8 @@ def _build_monthly_report_context(db: Session, year: int, month: int) -> dict[st
         "summary": {
             "lessons_done": lessons_done_count,
             "families_with_lessons": len(families_with_lessons),
+            "teaching_hours": round(total_teaching_hours, 2),
+            "teaching_hours_display": _format_hours_display(total_teaching_hours),
             "month_charge": total_month_charge,
             "month_paid": total_month_paid,
             "end_balance_sum": total_end,
@@ -854,11 +841,13 @@ def reports_export_monthly_xlsx(
     r += 1
     ws.cell(row=r, column=1, value=f"תאריך יצוא: {date.today().strftime('%d/%m/%Y')}")
     r += 1
+    th = summ.get("teaching_hours_display", "0")
     ws.cell(
         row=r,
         column=1,
         value=(
             f"שיעורים בחודש: {summ['lessons_done']} · "
+            f"שעות הוראה: {th} · "
             f"שולם ‎₪{summ['month_paid']} מתוך חיוב ‎₪{summ['month_charge']}"
         ),
     )

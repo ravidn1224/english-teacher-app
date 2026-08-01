@@ -3,6 +3,8 @@
 // ── State ────────────────────────────────────────────────────────────────────
 let calendar;
 let studentsList = [];
+/** From ``/api/students-list`` — used when student.default_price is 0 */
+let appDefaultPrices = { individual: 0, group: 0 };
 let activeEvent = null;   // event currently shown in detailModal
 /** Stable DB id for detail actions after calendar refetch replaces Event objects */
 let activeLessonDbId = null;
@@ -21,6 +23,11 @@ let isDraggingCalendarEvent = false;
 // ── Bootstrap modal instances (created after DOM ready) ──────────────────────
 let detailModal;
 let editModal;
+let groupPickModal;
+let recurringMoveModal;
+let pendingRecurringDragChoice = null;
+/** FullCalendar composite event while the group student picker is open */
+let groupPickContainerEvent = null;
 
 function getDetailExtendedProps() {
   if (!activeEvent || !activeEvent.extendedProps) return {};
@@ -153,12 +160,107 @@ function normalizeDroppedTimedLesson(info) {
   }
 }
 
+/** A focused work view, similar to Google Calendar: only the schedule fills the screen. */
+function setCalendarWorkView(isExpanded, usesNativeFullscreen) {
+  const workspace = document.getElementById('calendarWorkspace');
+  const button = document.getElementById('calendarFullscreenBtn');
+  if (!workspace) return;
+  workspace.classList.toggle('is-fullscreen', isExpanded && usesNativeFullscreen);
+  workspace.classList.toggle('is-focus-mode', isExpanded && !usesNativeFullscreen);
+  if (button) {
+    button.setAttribute('aria-pressed', String(isExpanded));
+    button.innerHTML = isExpanded
+      ? '<i class="bi bi-fullscreen-exit me-1" aria-hidden="true"></i><span>יציאה ממסך מלא</span>'
+      : '<i class="bi bi-arrows-fullscreen me-1" aria-hidden="true"></i><span>מסך מלא</span>';
+  }
+  if (calendar) {
+    calendar.setOption('height', isExpanded ? 'calc(100vh - 64px)' : 'calc(100vh - 190px)');
+    requestAnimationFrame(function () { calendar.updateSize(); });
+  }
+}
+
+function syncCalendarFullscreenState() {
+  const workspace = document.getElementById('calendarWorkspace');
+  if (!workspace) return;
+  const isFullscreen = document.fullscreenElement === workspace || document.webkitFullscreenElement === workspace;
+  setCalendarWorkView(isFullscreen, isFullscreen);
+}
+
+function toggleCalendarFullscreen() {
+  const workspace = document.getElementById('calendarWorkspace');
+  if (!workspace) return;
+  const isFullscreen = document.fullscreenElement === workspace || document.webkitFullscreenElement === workspace;
+  const isFocusMode = workspace.classList.contains('is-focus-mode');
+  if (isFullscreen || isFocusMode) {
+    const exit = document.exitFullscreen || document.webkitExitFullscreen;
+    if (isFullscreen && exit) exit.call(document);
+    else setCalendarWorkView(false, false);
+    return;
+  }
+  const request = workspace.requestFullscreen || workspace.webkitRequestFullscreen;
+  if (!request) {
+    setCalendarWorkView(true, false);
+    return;
+  }
+  Promise.resolve(request.call(workspace))
+    .then(function () {
+      window.setTimeout(function () {
+        const nativeActive = document.fullscreenElement === workspace || document.webkitFullscreenElement === workspace;
+        if (!nativeActive) setCalendarWorkView(true, false);
+      }, 100);
+    })
+    .catch(function () { setCalendarWorkView(true, false); });
+}
+
+function askRecurringDragScope(oldStart, newStart) {
+  if (!recurringMoveModal) return Promise.resolve('cancel');
+  const futureButton = document.querySelector('.recurring-move-choice--future');
+  const futureNote = document.getElementById('recurringMoveFutureNote');
+  const canMoveFuture = toInputDate(newStart) >= toInputDate(oldStart);
+  if (futureButton) futureButton.disabled = !canMoveFuture;
+  if (futureNote) futureNote.classList.toggle('d-none', canMoveFuture);
+  return new Promise(function (resolve) {
+    pendingRecurringDragChoice = resolve;
+    recurringMoveModal.show();
+  });
+}
+
+function chooseRecurringDragScope(scope) {
+  const resolve = pendingRecurringDragChoice;
+  pendingRecurringDragChoice = null;
+  if (recurringMoveModal) recurringMoveModal.hide();
+  if (resolve) resolve(scope === 'future' ? 'future' : 'one');
+}
+
 /** Persist lesson after drag or resize (real DB row or confirm recurring slot). */
 async function persistLessonAfterDragResize(info) {
   normalizeDroppedTimedLesson(info);
   const ev = info.event;
   const oldEv = info.oldEvent;
   const p = ev.extendedProps || {};
+
+  if (p.isGroupComposite) {
+    const members = p.groupMembers || [];
+    const ids = members
+      .map(function (m) {
+        return Number(m && m.id);
+      })
+      .filter(function (x) {
+        return Number.isFinite(x);
+      });
+    if (ids.length < 2) throw new Error('composite');
+    const newStart = ev.start;
+    const newEnd = getEventEnd(ev);
+    if (!newStart || !newEnd) throw new Error('bad dates');
+    const fd = new FormData();
+    fd.append('lesson_ids', ids.join(','));
+    fd.append('lesson_date', toInputDate(newStart));
+    fd.append('start_time', toInputTime(newStart));
+    fd.append('end_time', toInputTime(newEnd));
+    const res = await fetch('/api/lessons/batch-update-datetime', { method: 'POST', body: fd });
+    if (!res.ok) throw new Error('update failed');
+    return;
+  }
 
   if (ev.allDay) {
     throw new Error('allDay');
@@ -172,6 +274,8 @@ async function persistLessonAfterDragResize(info) {
     const newStart = ev.start;
     const newEnd = getEventEnd(ev);
     if (!oldStart || !oldEnd || !newStart || !newEnd) throw new Error('bad dates');
+    const scope = await askRecurringDragScope(oldStart, newStart);
+    if (scope === 'cancel') throw new Error('recur-cancel');
     const fd = new FormData();
     fd.append('student_id', String(studentId));
     fd.append('original_date', toInputDate(oldStart));
@@ -180,10 +284,21 @@ async function persistLessonAfterDragResize(info) {
     fd.append('new_date', toInputDate(newStart));
     fd.append('new_start', toInputTime(newStart));
     fd.append('new_end', toInputTime(newEnd));
-    const price = p.price != null && p.price !== '' ? Number(p.price) : 0;
-    fd.append('price', String(Number.isFinite(price) ? price : 0));
-    fd.append('notes', p.notes != null ? String(p.notes) : '');
-    const res = await fetch('/api/lessons/confirm-recurring', { method: 'POST', body: fd });
+    let res;
+    if (scope === 'future') {
+      const scheduleId = Number(p.scheduleId);
+      if (!Number.isFinite(scheduleId)) throw new Error('no schedule');
+      res = await fetch(`/api/lessons/recurring-schedule/${scheduleId}/split-and-move`, { method: 'POST', body: fd });
+    } else {
+      const price = p.price != null && p.price !== '' ? Number(p.price) : 0;
+      fd.append('price', String(Number.isFinite(price) ? price : 0));
+      fd.append('notes', p.notes != null ? String(p.notes) : '');
+      const grpRecur =
+        p.isGroupLesson === true ||
+        String(p.studentLessonType || '').toLowerCase() === 'group';
+      fd.append('is_group_lesson', grpRecur ? 'true' : 'false');
+      res = await fetch('/api/lessons/confirm-recurring', { method: 'POST', body: fd });
+    }
     if (!res.ok) throw new Error('recur failed');
     return;
   }
@@ -207,6 +322,254 @@ function escAttr(s) {
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;')
     .replace(/</g, '&lt;');
+}
+
+/** Safe for text inside HTML body */
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/** Allow only hex colors in inline styles (group row accent). */
+function safeCssColor(c) {
+  if (c == null || typeof c !== 'string') return '';
+  const s = c.trim();
+  if (/^#[0-9A-Fa-f]{3,8}$/.test(s)) return s;
+  return '';
+}
+
+/** Status pill HTML for calendar event (single or group row). */
+function lessonEvTagHtml(p, compact) {
+  p = p || {};
+  const cls = compact ? 'ev-tag ev-tag--group' : 'ev-tag';
+  const att = p.attendance || 'expected';
+  if (p.isRecurring) return `<span class="${cls}">🔁 קבוע</span>`;
+  if (p.status === 'cancelled') return `<span class="${cls}">✕ בוטל</span>`;
+  if (p.isPaid && detailExtendedPropsPartialPayment(p)) {
+    return `<span class="${cls}">◐ תשלום חלקי</span>`;
+  }
+  if (p.isPaid) return `<span class="${cls}">✓ שולם</span>`;
+  if (att === 'no_show') return `<span class="${cls}">✕ לא הגיע/ה</span>`;
+  if (att === 'arrived') return `<span class="${cls}">הגיע/ה · לא שולם</span>`;
+  return `<span class="${cls}">ממתין לסימון</span>`;
+}
+
+/** Last/first name from a merged member or raw calendar row (API may send studentLastName). */
+function memberLastName(m) {
+  const ep = (m && m.extendedProps) || {};
+  if (ep.studentLastName != null && String(ep.studentLastName).trim() !== '') {
+    return String(ep.studentLastName).trim();
+  }
+  const t = (m && m.title ? String(m.title) : '').trim();
+  const parts = t.split(/\s+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : t;
+}
+
+function memberFirstName(m) {
+  const ep = (m && m.extendedProps) || {};
+  if (ep.studentFirstName != null && String(ep.studentFirstName).trim() !== '') {
+    return String(ep.studentFirstName).trim();
+  }
+  const t = (m && m.title ? String(m.title) : '').trim();
+  const parts = t.split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return '';
+  return parts.slice(0, -1).join(' ');
+}
+
+/** Chip line: prefer given name so same-slot siblings (e.g. same surname) stay distinct. */
+function memberChipFirstName(m) {
+  const fn = memberFirstName(m);
+  if (fn) return fn;
+  const ln = memberLastName(m);
+  if (ln) return ln;
+  return (m && m.title ? String(m.title).trim() : '') || '';
+}
+
+function memberLastNameFromCalendarEvent(ev) {
+  const ep = (ev && ev.extendedProps) || {};
+  if (ep.studentLastName != null && String(ep.studentLastName).trim() !== '') {
+    return String(ep.studentLastName).trim();
+  }
+  const t = (ev && ev.title ? String(ev.title) : '').trim();
+  const parts = t.split(/\s+/).filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : t;
+}
+
+function fireMarkConcurrentAsGroup(containerEvent) {
+  const p = (containerEvent && containerEvent.extendedProps) || {};
+  const members = p.groupMembers || [];
+  const ids = members.map(function (m) { return m.id; }).filter(function (id) {
+    return /^\d+$/.test(String(id));
+  });
+  if (ids.length < 2) return;
+  const body = new URLSearchParams();
+  body.set('lesson_ids', ids.join(','));
+  fetch('/api/lessons/mark-concurrent-as-group', {
+    method: 'POST',
+    body,
+    credentials: 'same-origin',
+  }).catch(function () {});
+}
+
+function openGroupLessonPicker(containerEvent) {
+  if (!groupPickModal || !containerEvent) return;
+  groupPickContainerEvent = containerEvent;
+  fireMarkConcurrentAsGroup(containerEvent);
+  const p = containerEvent.extendedProps || {};
+  const members = (p.groupMembers || []).slice().sort(function (a, b) {
+    return String(memberLastName(a)).localeCompare(String(memberLastName(b)), 'he');
+  });
+  const list = document.getElementById('groupLessonPickList');
+  const timeEl = document.getElementById('groupLessonPickTime');
+  if (!list) return;
+  list.textContent = '';
+  if (timeEl) {
+    const endD = getEventEnd(containerEvent);
+    timeEl.textContent = `${fmtTime(containerEvent.start)} – ${fmtTime(endD)}`;
+  }
+  members.forEach(function (m) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className =
+      'list-group-item list-group-item-action text-start py-2 px-3 group-pick-row';
+    const line = document.createElement('div');
+    line.className = 'group-pick-name-line';
+    const last = document.createElement('span');
+    last.className = 'group-pick-last';
+    last.textContent = memberLastName(m) || m.title || '';
+    line.appendChild(last);
+    const fn = memberFirstName(m);
+    if (fn) {
+      const first = document.createElement('span');
+      first.className = 'group-pick-first';
+      first.textContent = fn;
+      line.appendChild(first);
+    }
+    btn.appendChild(line);
+    btn.addEventListener('click', function () {
+      groupPickModal.hide();
+      const cont = groupPickContainerEvent;
+      groupPickContainerEvent = null;
+      if (cont) {
+        void openDetailCard(buildSyntheticDetailEventFromMember(cont, m), { scrollToPayment: true });
+      }
+    });
+    list.appendChild(btn);
+  });
+  groupPickModal.show();
+}
+
+/**
+ * Same start+end → one full-width «group» card (pair/trio lesson) instead of narrow columns.
+ */
+function mergeConcurrentSlotEvents(events) {
+  if (!Array.isArray(events) || events.length < 2) return events;
+  const byKey = new Map();
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    const k = `${e.start}|${e.end}`;
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(e);
+  }
+  const doneKeys = new Set();
+  const out = [];
+  for (let i = 0; i < events.length; i++) {
+    const e = events[i];
+    const k = `${e.start}|${e.end}`;
+    if (doneKeys.has(k)) continue;
+    doneKeys.add(k);
+    const arr = byKey.get(k);
+    if (arr.length < 2) {
+      out.push(e);
+      continue;
+    }
+    const sorted = arr.slice().sort(function (a, b) {
+      const la = memberLastNameFromCalendarEvent(a);
+      const lb = memberLastNameFromCalendarEvent(b);
+      const c = String(la).localeCompare(String(lb), 'he');
+      if (c !== 0) return c;
+      return String(a.title || '').localeCompare(String(b.title || ''), 'he');
+    });
+    const grpId = 'grp:' + sorted.map(function (x) { return String(x.id); }).sort().join(':');
+    const members = sorted.map(function (x) {
+      return {
+        id: x.id,
+        title: x.title || '',
+        color: x.color,
+        textColor: x.textColor,
+        borderColor: x.borderColor,
+        extendedProps: Object.assign({}, x.extendedProps || {}),
+      };
+    });
+    const base = sorted[0];
+    const ex = function (x) {
+      return (x && x.extendedProps) || {};
+    };
+    const allPaid = sorted.every(function (x) {
+      return ex(x).isPaid === true;
+    });
+    const anyPartial = sorted.some(function (x) {
+      return ex(x).isPartialPayment === true;
+    });
+    let compColor = base.color;
+    let compText = base.textColor;
+    let compBorder = base.borderColor || base.color;
+    if (allPaid && anyPartial) {
+      compColor = '#EAB308';
+      compText = '#1C1917';
+      compBorder = '#CA8A04';
+    }
+    out.push({
+      id: grpId,
+      title: sorted
+        .map(function (x) {
+          return x.title;
+        })
+        .join(' · '),
+      start: base.start,
+      end: base.end,
+      color: compColor,
+      borderColor: compBorder,
+      textColor: compText,
+      editable: true,
+      startEditable: true,
+      durationEditable: true,
+      extendedProps: Object.assign({}, base.extendedProps || {}, {
+        isGroupComposite: true,
+        groupMembers: members,
+        isPartialPayment: allPaid && anyPartial,
+      }),
+    });
+  }
+  return out;
+}
+
+/** Open detail for one student when clicking a merged slot. */
+function buildSyntheticDetailEventFromMember(containerEvent, member) {
+  const end = getEventEnd(containerEvent);
+  return {
+    id: member.id,
+    title: member.title,
+    start: containerEvent.start,
+    end: end,
+    allDay: !!containerEvent.allDay,
+    extendedProps: Object.assign({}, member.extendedProps || {}),
+  };
+}
+
+/**
+ * Open lesson detail and jump to תשלום. Merged same-slot lessons open a student picker first.
+ */
+function openDetailFromCalendarEventHit(fcEvent, domTarget, clientX, clientY) {
+  const p = (fcEvent && fcEvent.extendedProps) || {};
+  if (p.isGroupComposite && Array.isArray(p.groupMembers) && p.groupMembers.length) {
+    openGroupLessonPicker(fcEvent);
+    return;
+  }
+  void openDetailCard(fcEvent, { scrollToPayment: true });
 }
 
 /** Hebrew label for payment_method stored in DB */
@@ -340,21 +703,22 @@ function detFamilyOpeningBeforeLesson() {
   return fam - applied;
 }
 
-/** תשלום מוצע = חיוב השיעור; זיכוי משפחתי (חיובי) מפחית; חוב קודם לא מצטרף להצעה. */
+/**
+ * תשלום מוצע = חיוב השיעור − יתרת פתיחה של המשפחה.
+ * יתרה חיובית = זיכוי (שילמו יותר בעבר) → פחות לשלם עכשיו.
+ * יתרה שלילית = חוב (חסר מהשיעור הקודם) → משלימים בשיעור הנוכחי.
+ */
 function detSuggestedPayAmount(openingBalance, lessonCharge) {
   const c = Math.max(0, Number(lessonCharge) || 0);
   const b = Number(openingBalance) || 0;
-  if (b > 0) return Math.max(0, c - b);
-  return c;
+  return Math.max(0, Math.round(c - b));
 }
 
 function renderDetChargeTypeLabel() {
   const el = document.getElementById('detChargeTypeLabel');
   if (!el) return;
   const ep = getDetailExtendedProps();
-  const grp = document.getElementById('detIsGroupLesson');
-  const isG = (grp && grp.checked) || ep.isGroupLesson === true;
-  el.textContent = isG ? '(קבוצתי)' : '(פרטי)';
+  el.textContent = ep.isGroupLesson === true ? '(קבוצתי)' : '(פרטי)';
 }
 
 function renderDetSuggestedPay() {
@@ -367,10 +731,20 @@ function renderDetSuggestedPay() {
   const sug = detSuggestedPayAmount(opening, charge);
   if (charge <= 0) {
     wrap.classList.add('d-none');
+    if (badge) badge.removeAttribute('title');
     return;
   }
   wrap.classList.remove('d-none');
   badge.textContent = '‎₪' + sug;
+  let hint = '';
+  if (opening > 0) {
+    hint = `חיוב שיעור ‎₪${charge}, יתרת זיכוי משפחתית ‎₪${opening} — מוצע לתשלום עכשיו ‎₪${sug}.`;
+  } else if (opening < 0) {
+    hint = `חיוב שיעור ‎₪${charge}, חוב מהעבר ‎₪${-opening} — מוצע לתשלום עכשיו ‎₪${sug} (משלים גם מהשיעור הקודם).`;
+  } else {
+    hint = `חיוב שיעור ‎₪${charge} — אין יתרה/חוב קודם; מוצע ‎₪${sug}.`;
+  }
+  badge.setAttribute('title', hint);
 }
 
 function renderDetQuickPayRow() {
@@ -395,39 +769,45 @@ function updateDetAfterPayPreview() {
     return;
   }
 
-  /* חוב כאן = רק מה שלא כוסה מול *חיוב השיעור*, לא יתרת משפחה רציפה (מבלבל בדוח/שיעור ראשון). */
+  /* מול *תשלום מוצע* (חיוב שיעור ± יתרת משפחה), לא רק מול חיוב השיעור — כדי שהעודף/חוב ישקפו מה יקוזז בשיעור הבא. */
   if (charge > 0) {
-    const shortfall = charge - paid;
-    if (shortfall <= 0) {
-      if (paid === charge) {
-        el.classList.add('d-none');
-        el.textContent = '';
-        el.className = 'small rounded px-3 py-2 mb-3 d-none';
-        return;
-      }
-      const over = paid - charge;
+    const opening = detFamilyOpeningBeforeLesson();
+    const suggested = detSuggestedPayAmount(opening, charge);
+    if (paid === suggested) {
+      el.classList.add('d-none');
+      el.textContent = '';
+      el.className = 'small rounded px-3 py-2 mb-3 d-none';
+      return;
+    }
+    if (paid > suggested) {
+      const over = paid - suggested;
       el.classList.remove('d-none');
       el.className =
         'small rounded px-3 py-2 mb-3 det-after-pay-preview det-after-pay-preview--credit';
       el.textContent =
-        'לשיעור זה שולם ‎₪' +
+        'שולם ‎₪' +
         paid +
-        ' מול חיוב ‎₪' +
+        ' לעומת תשלום מוצע ‎₪' +
+        suggested +
+        ' (חיוב שיעור ‎₪' +
         charge +
-        ' — עודף ‎₪' +
+        ') — עודף ‎₪' +
         over +
-        ' מהשיעור, יקוזז בשיעור הבא';
+        ' יקוזז בשיעור הבא';
       return;
     }
+    const shortfall = suggested - paid;
     el.classList.remove('d-none');
     el.className =
       'small rounded px-3 py-2 mb-3 det-after-pay-preview det-after-pay-preview--debt';
     el.textContent =
       'חוב ‎₪' +
       shortfall +
-      ' על השיעור (שולם ‎₪' +
+      ' — שולם ‎₪' +
       paid +
-      ' מתוך חיוב ‎₪' +
+      ' מתוך תשלום מוצע ‎₪' +
+      suggested +
+      ' (חיוב שיעור ‎₪' +
       charge +
       ') — יועבר לשיעור הבא';
     return;
@@ -439,11 +819,52 @@ function updateDetAfterPayPreview() {
   el.textContent = 'סכום הוזן בלי חיוב לשיעור — היתרה תתעדכן בשמירה.';
 }
 
+/** עודף תמיד נשאר כזיכוי למשפחה — אין «הוחזר עודף במזומן» בממשק. */
+function appendDetChangeGivenToFormData(fd) {
+  fd.append('change_given', 'false');
+}
+
 function detRefreshPaymentPanel() {
   renderDetChargeTypeLabel();
   renderDetSuggestedPay();
   renderDetQuickPayRow();
   updateDetAfterPayPreview();
+}
+
+/** תשלום חלקי: שולם וסכום בפועל &lt; חיוב (לפי extendedProps או שדות בטופס). */
+function detailExtendedPropsPartialPayment(p) {
+  p = p || {};
+  if (p.isPartialPayment === true) return true;
+  if (p.isPartialPayment === false) return false;
+  if (!p.isPaid) return false;
+  const c = p.price != null && p.price !== '' ? Number(p.price) : 0;
+  if (!Number.isFinite(c) || c <= 0) return false;
+  const stored = p.paidAmount != null && p.paidAmount !== '' ? Number(p.paidAmount) : NaN;
+  const pAmt = Number.isFinite(stored) ? stored : c;
+  return pAmt < c;
+}
+
+function syncDetailModalHeaderState() {
+  const header = document.getElementById('detHeader');
+  if (!header) return;
+  const p = getDetailExtendedProps();
+  const att = p.attendance || 'expected';
+  const cancelled = p.status === 'cancelled';
+  header.classList.remove(
+    's-paid',
+    's-partial-paid',
+    's-attended',
+    's-expected',
+    's-no-show',
+    's-recurring',
+    's-cancelled'
+  );
+  if (cancelled) header.classList.add('s-cancelled');
+  else if (p.isPaid && detailExtendedPropsPartialPayment(p)) header.classList.add('s-partial-paid');
+  else if (p.isPaid) header.classList.add('s-paid');
+  else if (att === 'no_show') header.classList.add('s-no-show');
+  else if (att === 'arrived') header.classList.add('s-attended');
+  else header.classList.add('s-expected');
 }
 
 /** Refresh badges, suggested pay, and live «אחרי תשלום» preview. */
@@ -472,6 +893,12 @@ function mergeLessonBalanceFromResponse(data) {
   if (data.lesson_balance_applied != null) {
     activeEvent.setExtendedProp('balanceApplied', data.lesson_balance_applied);
   }
+  if (data.change_given != null) {
+    activeEvent.setExtendedProp('changeGiven', !!data.change_given);
+  }
+  if (data.is_partial_payment != null) {
+    activeEvent.setExtendedProp('isPartialPayment', !!data.is_partial_payment);
+  }
 }
 
 function syncDetailPriceFromChargeInput() {
@@ -490,25 +917,6 @@ function mergeLessonUpdateIntoDetailUi(data, options) {
   updateDetBalancePreview();
   if (options && options.showBalanceHint && data.balance_hint_he) {
     showDetPaymentBalanceFeedback(data.balance_hint_he);
-  }
-}
-
-async function detPersistGroupLessonOnly() {
-  const ep = getDetailExtendedProps();
-  if (!activeEvent || ep.isRecurring === true || ep.status === 'cancelled') return;
-  const lessonId = getActiveLessonId();
-  if (!Number.isFinite(lessonId)) return;
-  const cb = document.getElementById('detIsGroupLesson');
-  if (!cb || cb.disabled) return;
-  const fd = new FormData();
-  fd.append('is_group_lesson', cb.checked ? 'true' : 'false');
-  const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
-  const data = await readLessonUpdateJson(res);
-  if (res.ok && typeof activeEvent.setExtendedProp === 'function') {
-    activeEvent.setExtendedProp('isGroupLesson', cb.checked);
-    mergeLessonBalanceFromResponse(data);
-    syncDetPaymentDatasetsFromExtendedProps();
-    updateDetBalancePreview();
   }
 }
 
@@ -643,15 +1051,112 @@ function buildRecurringScheduleAddFormData(studentId, newDate, newStart, newEnd,
   return fd;
 }
 
+function effectiveDefaultPriceForStudent(rec, forGroup) {
+  const ind = Number(appDefaultPrices.individual) || 0;
+  const grp = Number(appDefaultPrices.group) || 0;
+  const wantGroup = forGroup === true;
+  if (!rec) return wantGroup ? (grp > 0 ? grp : ind) : ind;
+  if (wantGroup) {
+    const dg = rec.default_price_group;
+    if (dg != null && dg !== '' && Number(dg) > 0) return Number(dg);
+    return grp > 0 ? grp : ind;
+  }
+  const dp = rec.default_price;
+  if (dp != null && dp !== '' && Number(dp) > 0) return Number(dp);
+  return ind > 0 ? ind : grp;
+}
+
+/**
+ * Real lessons must display their saved charge.  Defaults are only a suggestion
+ * for virtual recurring slots and newly created lessons.
+ */
+function groupSlotDisplayPriceForMember(memberLike) {
+  const ep = (memberLike && memberLike.extendedProps) || {};
+  const raw = ep.price;
+  if (ep.isRecurring !== true && raw != null && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  const sid = ep.studentId;
+  if (sid != null && sid !== '') {
+    const rec = studentsList.find(function (s) {
+      return String(s.id) === String(sid);
+    });
+    if (rec) {
+      return effectiveDefaultPriceForStudent(rec, true);
+    }
+  }
+  if (raw != null && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  const grp = Number(appDefaultPrices.group) || 0;
+  const ind = Number(appDefaultPrices.individual) || 0;
+  return grp > 0 ? grp : ind;
+}
+
+function updateCalendarStatusStrip(events) {
+  const totals = { all: 0, waiting: 0, unpaid: 0, partial: 0 };
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  (events || []).forEach(function (event) {
+    const p = event.extendedProps || {};
+    const members = p.isGroupComposite && Array.isArray(p.groupMembers)
+      ? p.groupMembers
+      : [event];
+    members.forEach(function (member) {
+      const mp = member.extendedProps || {};
+      if (mp.status === 'cancelled') return;
+      totals.all += 1;
+      if (mp.isRecurring === true) return;
+      const start = member.start || event.start;
+      const startDay = start instanceof Date
+        ? new Date(start.getFullYear(), start.getMonth(), start.getDate())
+        : null;
+      const beforeOrToday = startDay instanceof Date && startDay <= today;
+      if (beforeOrToday && (mp.attendance || 'expected') === 'expected') totals.waiting += 1;
+      if ((mp.attendance || 'expected') === 'arrived' && !mp.isPaid) totals.unpaid += 1;
+      if (detailExtendedPropsPartialPayment(mp)) totals.partial += 1;
+    });
+  });
+
+  const ids = {
+    all: 'calStatAll',
+    waiting: 'calStatWaiting',
+    unpaid: 'calStatUnpaid',
+    partial: 'calStatPartial',
+  };
+  Object.keys(ids).forEach(function (key) {
+    const el = document.getElementById(ids[key]);
+    if (el) el.textContent = String(totals[key]);
+  });
+}
+
+function lessonModalGroupChecked() {
+  const cb = document.getElementById('lessonModalIsGroup');
+  return !!(cb && cb.checked);
+}
+
 function syncLessonPriceFromStudentId(studentId) {
   const priceEl = document.getElementById('lessonPrice');
   if (!priceEl) return;
   const rec = studentsList.find(function (s) {
     return String(s.id) === String(studentId);
   });
-  if (rec && rec.default_price != null && rec.default_price !== '') {
-    priceEl.value = String(rec.default_price);
+  const forGroup = lessonModalGroupChecked();
+  const pr = effectiveDefaultPriceForStudent(rec, forGroup);
+  priceEl.value = String(pr > 0 ? pr : 0);
+}
+
+function syncLessonModalGroupFromStudent(rec) {
+  const cb = document.getElementById('lessonModalIsGroup');
+  if (!cb) return;
+  if (!rec) {
+    cb.checked = false;
+    return;
   }
+  cb.checked = String(rec.lesson_type || 'individual').toLowerCase() === 'group';
 }
 
 function lessonStudentDropdownOpen(open) {
@@ -694,7 +1199,7 @@ function renderLessonStudentDropdown(filterText) {
   dd.appendChild(frag);
 }
 
-function setLessonStudentComboboxValue(studentId) {
+function setLessonStudentComboboxValue(studentId, skipPriceSync) {
   const hidden = document.getElementById('lessonStudent');
   const search = document.getElementById('lessonStudentSearch');
   if (!hidden || !search) return;
@@ -702,6 +1207,7 @@ function setLessonStudentComboboxValue(studentId) {
     hidden.value = '';
     search.value = '';
     lessonStudentDropdownOpen(false);
+    syncLessonModalGroupFromStudent(null);
     return;
   }
   const rec = studentsList.find(function (s) {
@@ -710,7 +1216,8 @@ function setLessonStudentComboboxValue(studentId) {
   hidden.value = String(studentId);
   search.value = rec ? rec.name : '';
   lessonStudentDropdownOpen(false);
-  syncLessonPriceFromStudentId(studentId);
+  syncLessonModalGroupFromStudent(rec);
+  if (!skipPriceSync) syncLessonPriceFromStudentId(studentId);
 }
 
 function setupLessonStudentCombobox() {
@@ -766,6 +1273,16 @@ function setupLessonStudentCombobox() {
   });
 }
 
+function setupLessonModalGroupCheckbox() {
+  const cb = document.getElementById('lessonModalIsGroup');
+  if (!cb || cb.dataset.calBound) return;
+  cb.dataset.calBound = '1';
+  cb.addEventListener('change', function () {
+    const sid = document.getElementById('lessonStudent');
+    if (sid && sid.value) syncLessonPriceFromStudentId(sid.value);
+  });
+}
+
 function bindLessonFormTimeControls() {
   const startEl = document.getElementById('lessonStart');
   if (startEl && !startEl.dataset.calEndBound) {
@@ -803,6 +1320,19 @@ function detPaymentNoteForSubmit() {
 /** Native tooltip (title) — shown on hover */
 function eventHoverTitle(ev) {
   const p = ev.extendedProps || {};
+  if (p.isGroupComposite && Array.isArray(p.groupMembers) && p.groupMembers.length) {
+    const endT = getEventEnd(ev);
+    const lines = p.groupMembers.map(function (m) {
+      const pr = groupSlotDisplayPriceForMember(m);
+      const priceStr = Number.isFinite(pr) ? ` · ${pr} ₪` : '';
+      return `${m.title || ''} — ${memberStatusLabelHe(m.extendedProps || {})}${priceStr}`;
+    });
+    return (
+      lines.join('\n') +
+      `\n${fmtTime(ev.start)} – ${fmtTime(endT)}\n` +
+      'שיעור קבוצתי — לחיצה לבחירת תלמיד ותשלום'
+    );
+  }
   const name = ev.title || '';
   const start = fmtTime(ev.start);
   const endT = getEventEnd(ev);
@@ -810,6 +1340,7 @@ function eventHoverTitle(ev) {
   let status = '';
   if (p.isRecurring) status = 'שיעור קבוע';
   else if (p.status === 'cancelled') status = 'בוטל';
+  else if (p.isPaid && detailExtendedPropsPartialPayment(p)) status = 'תשלום חלקי';
   else if (p.isPaid) status = 'שולם';
   else if ((p.attendance || 'expected') === 'no_show') status = 'לא הגיע/ה';
   else if (p.attendance === 'arrived') status = 'הגיע/ה · לא שולם';
@@ -879,16 +1410,22 @@ function resolveEventFromClientPoint(clientX, clientY) {
   return hit ? hit.event : null;
 }
 
-/** Short status line for hover preview (Hebrew, matches event chip logic). */
-function eventStatusSummary(ev) {
-  const p = ev.extendedProps || {};
+/** Hebrew status from extendedProps (hover list, chips, tooltips). */
+function memberStatusLabelHe(p) {
+  p = p || {};
   const att = p.attendance || 'expected';
   if (p.isRecurring) return 'שיעור קבוע';
   if (p.status === 'cancelled') return 'בוטל';
+  if (p.isPaid && detailExtendedPropsPartialPayment(p)) return 'תשלום חלקי';
   if (p.isPaid) return 'שולם';
   if (att === 'no_show') return 'לא הגיע/ה';
-  if (att === 'arrived') return 'הגיע/ה · לא שולם';
+  if (p.attendance === 'arrived') return 'הגיע/ה · לא שולם';
   return 'ממתין לסימון';
+}
+
+/** Short status line for hover preview (single event). */
+function eventStatusSummary(ev) {
+  return memberStatusLabelHe(ev.extendedProps || {});
 }
 
 function positionCalHoverPreview(clientX, clientY) {
@@ -926,6 +1463,15 @@ function hideCalHoverPreview() {
   }
   const el = document.getElementById('calHoverPreview');
   if (!el) return;
+  el.classList.remove('cal-hover-preview--group');
+  const listWrap = document.getElementById('calHoverPreviewListWrap');
+  const listEl = document.getElementById('calHoverPreviewList');
+  const nameEl = document.getElementById('calHoverPreviewName');
+  const statusEl = document.getElementById('calHoverPreviewStatus');
+  if (listWrap) listWrap.classList.add('d-none');
+  if (listEl) listEl.textContent = '';
+  if (nameEl) nameEl.classList.remove('d-none');
+  if (statusEl) statusEl.classList.remove('d-none');
   el.hidden = true;
   el.setAttribute('aria-hidden', 'true');
 }
@@ -1006,9 +1552,13 @@ function bindCalendarScrollerHoverRefresh() {
 
 function showCalHoverPreview(ev, clientX, clientY) {
   const el = document.getElementById('calHoverPreview');
+  const labelEl = document.getElementById('calHoverPreviewLabel');
   const nameEl = document.getElementById('calHoverPreviewName');
+  const listWrap = document.getElementById('calHoverPreviewListWrap');
+  const listEl = document.getElementById('calHoverPreviewList');
   const timeEl = document.getElementById('calHoverPreviewTime');
   const statusEl = document.getElementById('calHoverPreviewStatus');
+  const hintEl = document.getElementById('calHoverPreviewHint');
   if (!el || !nameEl || !timeEl || !statusEl) return;
 
   const endT = getEventEnd(ev);
@@ -1017,12 +1567,66 @@ function showCalHoverPreview(ev, clientX, clientY) {
   const p = ev.extendedProps || {};
   const priceLine = p.price != null && p.price !== '' ? ` · ${p.price} ₪` : '';
 
-  nameEl.textContent = ev.title || '(ללא שם)';
-  timeEl.textContent = `${start} – ${end}${priceLine}`;
-  statusEl.textContent = eventStatusSummary(ev);
+  if (p.isGroupComposite && Array.isArray(p.groupMembers) && p.groupMembers.length) {
+    el.classList.add('cal-hover-preview--group');
+    if (labelEl) labelEl.textContent = 'שיעור קבוצתי';
+    nameEl.textContent = '';
+    nameEl.classList.add('d-none');
+    statusEl.textContent = '';
+    statusEl.classList.add('d-none');
+    if (listWrap && listEl) {
+      listWrap.classList.remove('d-none');
+      listEl.textContent = '';
+      p.groupMembers.forEach(function (m) {
+        const mp = m.extendedProps || {};
+        const li = document.createElement('li');
+        const lead = document.createElement('div');
+        lead.className = 'cal-hover-preview__li-lead';
+        const nameSpan = document.createElement('span');
+        nameSpan.className = 'cal-hover-preview__li-name cal-hover-preview__li-name--last';
+        nameSpan.textContent = memberLastName(m) || m.title || '';
+        lead.appendChild(nameSpan);
+        const fn = memberFirstName(m);
+        if (fn) {
+          const sub = document.createElement('span');
+          sub.className = 'cal-hover-preview__li-first';
+          sub.textContent = ` ${fn}`;
+          lead.appendChild(sub);
+        }
+        const meta = document.createElement('span');
+        meta.className = 'cal-hover-preview__li-meta';
+        let metaParts = memberStatusLabelHe(mp);
+        const dispPr = groupSlotDisplayPriceForMember(m);
+        if (Number.isFinite(dispPr)) metaParts += ' · ' + dispPr + ' ₪';
+        meta.textContent = metaParts;
+        li.appendChild(lead);
+        li.appendChild(meta);
+        listEl.appendChild(li);
+      });
+    }
+    timeEl.textContent = `${start} – ${end}`;
+    if (hintEl) hintEl.textContent = 'לחיצה לבחירת תלמיד ופתיחת תשלום';
+  } else {
+    el.classList.remove('cal-hover-preview--group');
+    if (labelEl) labelEl.textContent = 'תצוגה מקדימה';
+    nameEl.classList.remove('d-none');
+    statusEl.classList.remove('d-none');
+    if (listWrap) listWrap.classList.add('d-none');
+    if (listEl) listEl.textContent = '';
+    nameEl.textContent = ev.title || '(ללא שם)';
+    timeEl.textContent = `${start} – ${end}${priceLine}`;
+    statusEl.textContent = eventStatusSummary(ev);
+    if (hintEl) hintEl.textContent = 'לחיצה לפתיחת פרטים';
+  }
 
   el.hidden = false;
   el.setAttribute('aria-hidden', 'false');
+  if (listWrap) {
+    listWrap.setAttribute(
+      'aria-hidden',
+      p.isGroupComposite && Array.isArray(p.groupMembers) && p.groupMembers.length ? 'false' : 'true'
+    );
+  }
   positionCalHoverPreview(clientX, clientY);
 
   if (!calHoverPreviewMoveHandler) {
@@ -1035,19 +1639,48 @@ function showCalHoverPreview(ev, clientX, clientY) {
 
 // ── Students list ────────────────────────────────────────────────────────────
 async function loadStudents() {
-  studentsList = await fetchJsonWithRetry('/api/students-list', {});
+  const data = await fetchJsonWithRetry('/api/students-list', {});
+  if (Array.isArray(data)) {
+    studentsList = data;
+    appDefaultPrices = { individual: 0, group: 0 };
+  } else {
+    studentsList = data.students || [];
+    appDefaultPrices = {
+      individual: Number((data.defaults && data.defaults.individual) || 0) || 0,
+      group: Number((data.defaults && data.defaults.group) || 0) || 0,
+    };
+  }
   renderLessonStudentDropdown('');
   setupLessonStudentCombobox();
+  setupLessonModalGroupCheckbox();
 }
 
 // ── Calendar init ────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async function () {
   detailModal = new bootstrap.Modal(document.getElementById('detailModal'));
   editModal   = new bootstrap.Modal(document.getElementById('editModal'));
+  const groupPickEl = document.getElementById('groupLessonPickModal');
+  if (groupPickEl) {
+    groupPickModal = new bootstrap.Modal(groupPickEl);
+    groupPickEl.addEventListener('hidden.bs.modal', function () {
+      groupPickContainerEvent = null;
+    });
+  }
+  const recurringMoveEl = document.getElementById('recurringMoveModal');
+  if (recurringMoveEl) {
+    recurringMoveModal = new bootstrap.Modal(recurringMoveEl);
+    recurringMoveEl.addEventListener('hidden.bs.modal', function () {
+      if (!pendingRecurringDragChoice) return;
+      const resolve = pendingRecurringDragChoice;
+      pendingRecurringDragChoice = null;
+      resolve('cancel');
+    });
+  }
   document.getElementById('detailModal').addEventListener('hidden.bs.modal', function () {
     activeLessonDbId = null;
   });
   bindLessonFormTimeControls();
+  setupLessonModalGroupCheckbox();
 
   const detPmSel = document.getElementById('detPaymentMethod');
   if (detPmSel) {
@@ -1081,15 +1714,6 @@ document.addEventListener('DOMContentLoaded', async function () {
       detRefreshPaymentPanel();
     });
   });
-  const detGrp = document.getElementById('detIsGroupLesson');
-  if (detGrp && !detGrp.dataset.bound) {
-    detGrp.dataset.bound = '1';
-    detGrp.addEventListener('change', function () {
-      renderDetChargeTypeLabel();
-      detRefreshPaymentPanel();
-      void detPersistGroupLessonOnly();
-    });
-  }
   (function bindDetPaymentPreviewInputs() {
     const ch = document.getElementById('detLessonCharge');
     const pa = document.getElementById('detPaidAmount');
@@ -1129,10 +1753,10 @@ document.addEventListener('DOMContentLoaded', async function () {
     slotMaxTime: '24:00:00',
     allDaySlot: false,
     /* Fixed-ish height helps the “now” line layout; auto height often hides the indicator */
-    height: 'calc(100vh - 260px)',
+    height: 'calc(100vh - 190px)',
     expandRows: true,
     displayEventEnd: true,
-    eventMinHeight: 65, // Force FullCalendar to make events tall enough for 3 lines of text
+    /* No eventMinHeight: a pixel floor makes 1h blocks taller than their real duration (~+15min visually). */
     slotEventOverlap: true, // Allow overlapping so they don't get squished to 20px wide
     nowIndicator: true,
 
@@ -1173,6 +1797,8 @@ document.addEventListener('DOMContentLoaded', async function () {
         })
         .catch(function (err) {
           info.revert();
+          if (err && err.message === 'composite') return;
+          if (err && err.message === 'recur-cancel') return;
           if (err && err.message === 'allDay') {
             alert('לא ניתן לשבץ שיעור כ«כל היום». השתמשי בתצוגת שבוע או יום.');
           } else {
@@ -1186,8 +1812,10 @@ document.addEventListener('DOMContentLoaded', async function () {
         .then(function () {
           calendar.refetchEvents();
         })
-        .catch(function () {
+        .catch(function (err) {
           info.revert();
+          if (err && err.message === 'composite') return;
+          if (err && err.message === 'recur-cancel') return;
           alert('לא ניתן לעדכן את אורך השיעור. נסי שוב.');
         });
     },
@@ -1202,10 +1830,20 @@ document.addEventListener('DOMContentLoaded', async function () {
     eventDidMount: function (info) {
       const el = info.el;
       if (!el) return;
-      const tip = eventHoverTitle(info.event);
+      const p = info.event.extendedProps || {};
+      /* Native title = dark browser tooltip; merged slots use only the white hover card for the full list. */
       el.setAttribute('data-event-id', String(info.event.id));
-      el.setAttribute('title', tip);
-      el.setAttribute('aria-label', tip.replace(/\n/g, ' — '));
+      let aria;
+      if (p.isGroupComposite && Array.isArray(p.groupMembers) && p.groupMembers.length) {
+        el.removeAttribute('title');
+        const endT = getEventEnd(info.event);
+        aria = `שיעור קבוצתי, ${p.groupMembers.length} תלמידים, ${fmtTime(info.event.start)}–${fmtTime(endT)}`;
+      } else {
+        const tip = eventHoverTitle(info.event);
+        el.setAttribute('title', tip);
+        aria = tip.replace(/\n/g, ' — ');
+      }
+      el.setAttribute('aria-label', aria);
       /*
        * Timed events render as <a href="…" class="fc-event">. Browsers start native
        * link-drag on <a>, which steals the gesture from FullCalendar’s pointer drag.
@@ -1222,36 +1860,57 @@ document.addEventListener('DOMContentLoaded', async function () {
 
     // ── Custom event rendering ───────────────────────────────────
     eventContent: function (info) {
-      const p    = info.event.extendedProps;
-      const time = fmtTime(info.event.start);
-      const name = info.event.title;
-      const att  = p.attendance || 'expected';
+      const p = info.event.extendedProps || {};
+      let time;
+      if (info.event.allDay) {
+        time = fmtTime(info.event.start);
+      } else {
+        const endD = getEventEnd(info.event);
+        time =
+          endD instanceof Date && !isNaN(endD.getTime())
+            ? `${fmtTime(info.event.start)} – ${fmtTime(endD)}`
+            : fmtTime(info.event.start);
+      }
 
-      let tag = '';
-      if (p.isRecurring)               tag = '<span class="ev-tag">🔁 קבוע</span>';
-      else if (p.status === 'cancelled') tag = '<span class="ev-tag">✕ בוטל</span>';
-      else if (p.isPaid)               tag = '<span class="ev-tag">✓ שולם</span>';
-      else if (att === 'no_show')      tag = '<span class="ev-tag">✕ לא הגיע/ה</span>';
-      else if (att === 'arrived')      tag = '<span class="ev-tag">הגיע/ה · לא שולם</span>';
-      else                             tag = '<span class="ev-tag">ממתין לסימון</span>';
+      if (p.isGroupComposite && Array.isArray(p.groupMembers) && p.groupMembers.length) {
+        const chipNames = p.groupMembers
+          .map(memberChipFirstName)
+          .filter(function (s) { return s; });
+        const namesLine = escHtml(chipNames.join(' · '));
+        return {
+          html: `<div class="ev-inner ev-inner--group" data-event-id="${escAttr(info.event.id)}">
+          <div class="ev-time">${time}</div>
+          <div class="ev-group-lesson-label">שיעור קבוצתי</div>
+          <div class="ev-group-names-small">${namesLine}</div>
+        </div>`,
+        };
+      }
+
+      const name = info.event.title;
+      const tag = lessonEvTagHtml(p, false);
 
       return {
         html: `<div class="ev-inner" data-event-id="${escAttr(info.event.id)}">
           <div class="ev-time">${time}</div>
-          <div class="ev-name">${name}</div>
-          ${tag}
-        </div>`
+          <div class="ev-title-row">
+            <div class="ev-name">${escHtml(name || '')}</div>
+            ${tag}
+          </div>
+        </div>`,
       };
     },
 
     events: function (fetchInfo, successCallback, failureCallback) {
       const q = `start=${encodeURIComponent(fetchInfo.startStr)}&end=${encodeURIComponent(fetchInfo.endStr)}`;
       fetchJsonWithRetry(`/api/lessons?${q}`, {})
-        .then(successCallback)
+        .then(function (rows) {
+          successCallback(mergeConcurrentSlotEvents(rows));
+        })
         .catch(failureCallback);
     },
 
-    eventsSet: function () {
+    eventsSet: function (events) {
+      updateCalendarStatusStrip(events);
       requestAnimationFrame(resyncActiveEventAfterCalendarLoad);
     },
 
@@ -1264,14 +1923,19 @@ document.addEventListener('DOMContentLoaded', async function () {
         openFullEditModal(info.event, null);
         return;
       }
-      void openDetailCard(info.event);
+      openDetailFromCalendarEventHit(
+        info.event,
+        info.jsEvent.target,
+        info.jsEvent.clientX,
+        info.jsEvent.clientY
+      );
     },
 
     // ── Click on empty slot → new lesson form ────────────────────
     dateClick: function (info) {
       const evObj = resolveEventFromClientPoint(info.jsEvent.clientX, info.jsEvent.clientY);
       if (evObj) {
-        void openDetailCard(evObj);
+        openDetailFromCalendarEventHit(evObj, null, info.jsEvent.clientX, info.jsEvent.clientY);
         return;
       }
       openNewLessonModalOnDate(info.dateStr);
@@ -1279,6 +1943,13 @@ document.addEventListener('DOMContentLoaded', async function () {
   });
 
   calendar.render();
+  document.addEventListener('fullscreenchange', syncCalendarFullscreenState);
+  document.addEventListener('webkitfullscreenchange', syncCalendarFullscreenState);
+  document.addEventListener('keydown', function (event) {
+    if (event.key !== 'Escape') return;
+    const workspace = document.getElementById('calendarWorkspace');
+    if (workspace && workspace.classList.contains('is-focus-mode')) setCalendarWorkView(false, false);
+  });
   bindCalendarPointerHover(document.getElementById('calendar'));
   requestAnimationFrame(function () {
     scrollCalendarToNow();
@@ -1384,7 +2055,7 @@ document.addEventListener(
     if (!evObj) return;
     e.preventDefault();
     e.stopPropagation();
-    void openDetailCard(evObj);
+    openDetailFromCalendarEventHit(evObj, e.target, e.clientX, e.clientY);
   },
   true
 );
@@ -1452,7 +2123,10 @@ async function openDetailCard(event, options) {
       let evObj = calendar.getEventById(String(data.id));
       if (!evObj) evObj = calendar.getEventById(Number(data.id));
       if (evObj) {
-        await openDetailCard(evObj, { skipMaterialize: true });
+        await openDetailCard(evObj, {
+          skipMaterialize: true,
+          scrollToPayment: !!options.scrollToPayment,
+        });
         return;
       }
       alert('השיעור נוצר — רענני את הלוח אם הכרטיס לא נפתח.');
@@ -1485,15 +2159,9 @@ async function openDetailCard(event, options) {
     fmtDate(event.start) + '   ' + fmtTime(event.start) + ' – ' + fmtTime(endForDisplay);
 
   const editWhenBtn = document.getElementById('detBtnEditWhen');
-  const header = document.getElementById('detHeader');
   const att = p.attendance || 'expected';
   const cancelled = p.status === 'cancelled';
-  header.classList.remove('s-paid', 's-attended', 's-expected', 's-no-show', 's-recurring', 's-cancelled');
-  if (p.status === 'cancelled') header.classList.add('s-cancelled');
-  else if (p.isPaid) header.classList.add('s-paid');
-  else if (att === 'no_show') header.classList.add('s-no-show');
-  else if (att === 'arrived') header.classList.add('s-attended');
-  else header.classList.add('s-expected');
+  syncDetailModalHeaderState();
 
   if (editWhenBtn) {
     editWhenBtn.style.display = cancelled ? 'none' : '';
@@ -1506,7 +2174,7 @@ async function openDetailCard(event, options) {
   const paidRow = document.getElementById('detPaidRow');
   const isPaid = p.isPaid === true;
   paidRow.classList.toggle('d-none', cancelled);
-  if (!cancelled) _syncDetailPaidDualButtons(isPaid);
+  if (!cancelled) _syncDetailPaidActionButtons();
   _syncDetailAttendanceUI(att, cancelled, isPaid);
 
   const notesSec = document.getElementById('detNotesSection');
@@ -1517,19 +2185,30 @@ async function openDetailCard(event, options) {
   hideDetPaymentBalanceFeedback();
 
   const paidAmtEl = document.getElementById('detPaidAmount');
-  const prn = p.price != null && p.price !== '' ? Number(p.price) : 0;
   const isVirtRecurring = p.isRecurring === true;
+  let prn = p.price != null && p.price !== '' ? Number(p.price) : 0;
+  /* Group picker / hover use group-track defaults (groupSlotDisplayPriceForMember), not raw
+   * lesson.price. Rows can still hold an old individual ₪ after concurrent lessons were marked
+   * group — align the payment field with the same rule for unpaid lessons. */
+  const useGroupTrackCharge =
+    p.isGroupLesson === true && !cancelled && !isPaid && !isVirtRecurring;
+  if (useGroupTrackCharge) {
+    const disp = groupSlotDisplayPriceForMember({ extendedProps: p });
+    if (Number.isFinite(disp) && disp >= 0) {
+      prn = disp;
+      if (activeEvent) {
+        if (typeof activeEvent.setExtendedProp === 'function') {
+          activeEvent.setExtendedProp('price', prn);
+        } else if (activeEvent.extendedProps) {
+          activeEvent.extendedProps.price = prn;
+        }
+      }
+    }
+  }
   const detLessonChargeEl = document.getElementById('detLessonCharge');
   if (detLessonChargeEl) {
     detLessonChargeEl.value = Number.isFinite(prn) ? String(prn) : '0';
     detLessonChargeEl.disabled = !!(cancelled || isVirtRecurring || activeLessonDbId == null);
-  }
-  const detGroupRow = document.getElementById('detGroupLessonRow');
-  const detGroupCb = document.getElementById('detIsGroupLesson');
-  if (detGroupRow) detGroupRow.classList.toggle('d-none', cancelled || isVirtRecurring);
-  if (detGroupCb) {
-    detGroupCb.checked = p.isGroupLesson === true;
-    detGroupCb.disabled = !!(cancelled || isVirtRecurring || activeLessonDbId == null);
   }
   if (!cancelled) {
     syncDetPaymentDatasetsFromExtendedProps();
@@ -1560,8 +2239,8 @@ async function openDetailCard(event, options) {
   const payHintLabel = document.getElementById('detPayHint');
   if (payHintLabel && !cancelled) {
     payHintLabel.textContent = isPaid
-      ? 'שולם ✓ — אפשר לעדכן סכום/אמצעי וללחוץ «עדכן סכום ואמצעי» או «שמור פרטים».'
-      : 'בחרי אמצעי וסכום, ואז לחצי «שולם» או «לא שולם».';
+      ? 'תשלום נרשם ✓ — אפשר לעדכן סכום/אמצעי וללחוץ «עדכן סכום ואמצעי» או «שמור פרטים».'
+      : 'בחרי אמצעי וסכום, ואז «שולם», «תשלום חלקי» או «לא שולם».';
   }
 
   const micro = document.getElementById('detMicroHint');
@@ -1575,12 +2254,49 @@ async function openDetailCard(event, options) {
       msg =
         'שולם ✓ — אפשר לדייק סכום ואמצעי למעלה · «שמור פרטים» לעדכון ההערות והתשלום יחד.';
     } else {
-      msg = 'נוכחות למעלה · תשלום: בוחרים אמצעי וסכום, ואז «שולם» או «לא שולם».';
+      msg = 'נוכחות למעלה · תשלום: אמצעי וסכום, ואז «שולם», «תשלום חלקי» או «לא שולם».';
     }
     micro.textContent = msg;
   }
 
   detailModal.show();
+
+  if (options.scrollToPayment && !cancelled) {
+    const modalEl = document.getElementById('detailModal');
+    const onShown = function () {
+      if (modalEl) modalEl.removeEventListener('shown.bs.modal', onShown);
+      const body = document.getElementById('detBodyReal');
+      const pay = document.getElementById('detPaidRow');
+      if (!pay || pay.classList.contains('d-none')) return;
+      if (body && body.contains(pay)) {
+        try {
+          const rect = pay.getBoundingClientRect();
+          const brect = body.getBoundingClientRect();
+          const nextTop = body.scrollTop + (rect.top - brect.top) - 10;
+          body.scrollTo({ top: Math.max(0, nextTop), behavior: 'smooth' });
+        } catch (e) {
+          try {
+            pay.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          } catch (e2) { /* ignore */ }
+        }
+      } else {
+        try {
+          pay.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } catch (e) { /* ignore */ }
+      }
+      requestAnimationFrame(function () {
+        const amt = document.getElementById('detPaidAmount');
+        if (amt && !amt.disabled) {
+          try {
+            amt.focus({ preventScroll: true });
+          } catch (e3) {
+            amt.focus();
+          }
+        }
+      });
+    };
+    if (modalEl) modalEl.addEventListener('shown.bs.modal', onShown, { once: true });
+  }
 }
 
 function _syncDetailAttendanceUI(att, cancelled, isPaid) {
@@ -1600,7 +2316,7 @@ async function detSavePaymentDetails() {
   if (!activeEvent || ep.isRecurring) return;
   if (ep.status === 'cancelled') return;
   if (!ep.isPaid) {
-    alert('קודם סמני «שולם» למטה, ואז אפשר לעדכן סכום ואמצעי.');
+    alert('קודם סמני מצב תשלום למטה («שולם», «תשלום חלקי» או «לא שולם»), ואז אפשר לעדכן סכום ואמצעי.');
     return;
   }
   const lessonId = getActiveLessonId();
@@ -1626,6 +2342,7 @@ async function detSavePaymentDetails() {
   fd.append('paid_amount', String(v));
   fd.append('payment_method', pm);
   fd.append('payment_note', pm === 'other' ? detPaymentNoteForSubmit() : '');
+  appendDetChangeGivenToFormData(fd);
   const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
   const data = await readLessonUpdateJson(res);
   if (res.ok) {
@@ -1634,8 +2351,12 @@ async function detSavePaymentDetails() {
       activeEvent.setExtendedProp('paidAmount', v);
       activeEvent.setExtendedProp('paymentMethod', pm);
       activeEvent.setExtendedProp('paymentNote', pm === 'other' ? detPaymentNoteForSubmit() : '');
+      if (data.change_given != null) activeEvent.setExtendedProp('changeGiven', !!data.change_given);
     }
     mergeLessonUpdateIntoDetailUi(data, { showBalanceHint: true });
+    syncDetailModalHeaderState();
+    detRefreshPaymentPanel();
+    _syncDetailPaidActionButtons();
     showDetSavedBanner();
     calendar.refetchEvents();
   } else {
@@ -1666,20 +2387,32 @@ async function detSetAttendance(value) {
   }
 }
 
-function _syncDetailPaidDualButtons(isPaid) {
+function _syncDetailPaidActionButtons() {
   const paidBtn = document.getElementById('detMarkPaidBtn');
+  const partialBtn = document.getElementById('detMarkPartialBtn');
   const unpaidBtn = document.getElementById('detMarkUnpaidBtn');
-  if (!paidBtn || !unpaidBtn) return;
-  if (isPaid) {
-    paidBtn.className = 'btn btn-success flex-fill';
-    unpaidBtn.className = 'btn btn-outline-secondary flex-fill det-mark-unpaid-btn';
-  } else {
-    paidBtn.className = 'btn btn-outline-success flex-fill';
+  if (!paidBtn || !partialBtn || !unpaidBtn) return;
+  const p = getDetailExtendedProps();
+  const isPaid = p.isPaid === true;
+  const isPartial = isPaid && detailExtendedPropsPartialPayment(p);
+
+  paidBtn.className = 'btn btn-outline-success flex-fill';
+  partialBtn.className = 'btn btn-outline-warning flex-fill text-dark';
+  unpaidBtn.className = 'btn btn-outline-danger flex-fill det-mark-unpaid-btn';
+
+  if (!isPaid) {
     unpaidBtn.className = 'btn btn-danger flex-fill det-mark-unpaid-btn';
+  } else if (isPartial) {
+    partialBtn.className = 'btn btn-warning flex-fill text-dark';
+  } else {
+    paidBtn.className = 'btn btn-success flex-fill';
   }
 }
 
-async function detApplyPaidState(newPaid) {
+/**
+ * @param {boolean|'full'|'partial'} paidMode — false = לא שולם; 'full' = שולם במחיר מלא; 'partial' = תשלום חלקי לפי שדה הסכום
+ */
+async function detApplyPaidState(paidMode) {
   if (!activeEvent) return;
   const ep = getDetailExtendedProps();
   if (ep.status === 'cancelled') return;
@@ -1687,8 +2420,43 @@ async function detApplyPaidState(newPaid) {
   if (!Number.isFinite(lessonId)) return;
   const lessonPrice = requireDetailLessonPriceOrAlert();
   if (lessonPrice === null) return;
+
+  const fullPaid = paidMode === true || paidMode === 'full';
+  const partialPaid = paidMode === 'partial';
+  const wantPaid = fullPaid || partialPaid;
+
+  let payAmtForSubmit = lessonPrice;
+
+  if (!wantPaid) {
+    payAmtForSubmit = 0;
+  } else if (fullPaid) {
+    payAmtForSubmit = lessonPrice;
+  } else if (partialPaid) {
+    if (lessonPrice <= 0) {
+      alert('אין חיוב לשיעור — השתמשי ב«שולם» או «לא שולם».');
+      return;
+    }
+    const rawPa = (document.getElementById('detPaidAmount').value || '').trim();
+    const parsed = rawPa === '' ? NaN : parseInt(rawPa, 10);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      alert('נא להזין סכום תשלום תקין לתשלום חלקי.');
+      return;
+    }
+    if (parsed <= 0) {
+      alert('לתשלום חלקי נא להזין סכום גדול מ-0.');
+      return;
+    }
+    if (parsed >= lessonPrice) {
+      alert('הסכום מלא או גבוה ממחיר השיעור — לסימון מלא לחצי «שולם».');
+      return;
+    }
+    payAmtForSubmit = parsed;
+  }
+
+  const effectivePaid = !!(wantPaid && !(lessonPrice > 0 && payAmtForSubmit === 0));
+
   const pm = (document.getElementById('detPaymentMethod').value || 'cash').trim();
-  if (newPaid && pm === 'other') {
+  if (effectivePaid && pm === 'other') {
     const pn = detPaymentNoteForSubmit();
     if (!pn) {
       alert('נא לפרט את אמצעי התשלום בשדה «אחר».');
@@ -1698,37 +2466,36 @@ async function detApplyPaidState(newPaid) {
 
   const fd = new FormData();
   fd.append('price', String(lessonPrice));
-  fd.append('is_paid', newPaid ? 'true' : 'false');
+  fd.append('is_paid', effectivePaid ? 'true' : 'false');
   fd.append('payment_finalized', 'true');
-  if (newPaid) {
+  if (effectivePaid) {
     fd.append('status', 'completed');
     fd.append('attendance', 'arrived');
-    const pa = (document.getElementById('detPaidAmount').value || '').trim();
-    fd.append('paid_amount', pa || String(lessonPrice));
+    fd.append('paid_amount', String(payAmtForSubmit));
     fd.append('payment_method', pm || 'cash');
     fd.append('payment_note', pm === 'other' ? detPaymentNoteForSubmit() : '');
+    appendDetChangeGivenToFormData(fd);
   } else {
     fd.append('paid_amount', '');
     fd.append('payment_method', '');
     fd.append('payment_note', '');
+    fd.append('change_given', 'false');
   }
 
   const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
   const data = await readLessonUpdateJson(res);
   if (res.ok) {
-    _syncDetailPaidDualButtons(newPaid);
     const paySaveBtn = document.getElementById('detSavePaymentDetailsBtn');
-    if (paySaveBtn) paySaveBtn.classList.toggle('d-none', !newPaid);
+    if (paySaveBtn) paySaveBtn.classList.toggle('d-none', !effectivePaid);
     const payHintLabel = document.getElementById('detPayHint');
     if (payHintLabel && ep.status !== 'cancelled') {
-      payHintLabel.textContent = newPaid
-        ? 'שולם ✓ — אפשר לעדכן סכום/אמצעי וללחוץ «עדכן סכום ואמצעי» או «שמור פרטים».'
-        : 'בחרי אמצעי וסכום, ואז לחצי «שולם» או «לא שולם».';
+      payHintLabel.textContent = effectivePaid
+        ? 'תשלום נרשם ✓ — אפשר לעדכן סכום/אמצעי וללחוץ «עדכן סכום ואמצעי» או «שמור פרטים».'
+        : 'בחרי אמצעי וסכום, ואז «שולם», «תשלום חלקי» או «לא שולם».';
     }
     let finalAmtForMsg = 0;
-    if (newPaid) {
-      const pam = (document.getElementById('detPaidAmount').value || '').trim();
-      finalAmtForMsg = pam ? parseInt(pam, 10) : lessonPrice;
+    if (effectivePaid) {
+      finalAmtForMsg = payAmtForSubmit;
       if (typeof activeEvent.setExtendedProp === 'function') {
         activeEvent.setExtendedProp('attendance', 'arrived');
         activeEvent.setExtendedProp('isPaid', true);
@@ -1736,21 +2503,33 @@ async function detApplyPaidState(newPaid) {
         activeEvent.setExtendedProp('paidAmount', finalAmtForMsg);
         activeEvent.setExtendedProp('paymentMethod', pm || 'cash');
         activeEvent.setExtendedProp('paymentNote', pm === 'other' ? detPaymentNoteForSubmit() : '');
+        if (data.change_given != null) activeEvent.setExtendedProp('changeGiven', !!data.change_given);
       }
       _syncDetailAttendanceUI('arrived', false, true);
+      if (fullPaid) {
+        const paEl = document.getElementById('detPaidAmount');
+        if (paEl) paEl.value = String(lessonPrice);
+      }
     } else {
       if (typeof activeEvent.setExtendedProp === 'function') {
         activeEvent.setExtendedProp('isPaid', false);
         activeEvent.setExtendedProp('paidAmount', null);
         activeEvent.setExtendedProp('paymentMethod', '');
         activeEvent.setExtendedProp('paymentNote', '');
+        activeEvent.setExtendedProp('changeGiven', false);
+        activeEvent.setExtendedProp('isPartialPayment', false);
       }
       _syncDetailAttendanceUI(ep.attendance || 'expected', false, false);
     }
     mergeLessonUpdateIntoDetailUi(data, { showBalanceHint: false });
+    syncDetailModalHeaderState();
+    detRefreshPaymentPanel();
+    _syncDetailPaidActionButtons();
+    const partialNow =
+      effectivePaid && lessonPrice > 0 && finalAmtForMsg > 0 && finalAmtForMsg < lessonPrice;
     showDetPaymentBalanceFeedback(
-      buildDetPaymentConfirmation(data, newPaid, finalAmtForMsg, newPaid ? pm : ''),
-      newPaid ? 'alert-success' : 'alert-warning'
+      buildDetPaymentConfirmation(data, effectivePaid, finalAmtForMsg, effectivePaid ? pm : ''),
+      !effectivePaid ? 'alert-warning' : partialNow ? 'alert-warning' : 'alert-success'
     );
     calendar.refetchEvents();
   } else {
@@ -1785,10 +2564,7 @@ async function detSaveAllDetails() {
   fd.append('price', String(lessonPrice));
   fd.append('payment_method', pm);
   fd.append('payment_note', pm === 'other' ? detPaymentNoteForSubmit() : '');
-  const detGroupCb = document.getElementById('detIsGroupLesson');
-  if (detGroupCb && !detGroupCb.disabled) {
-    fd.append('is_group_lesson', detGroupCb.checked ? 'true' : 'false');
-  }
+  fd.append('is_group_lesson', ep.isGroupLesson === true ? 'true' : 'false');
 
   if (isPaid) {
     const raw = (document.getElementById('detPaidAmount').value || '').trim();
@@ -1798,6 +2574,7 @@ async function detSaveAllDetails() {
       return;
     }
     fd.append('paid_amount', String(v));
+    appendDetChangeGivenToFormData(fd);
   }
 
   const res = await fetch(`/api/lessons/${lessonId}/update`, { method: 'POST', body: fd });
@@ -1808,16 +2585,18 @@ async function detSaveAllDetails() {
       activeEvent.setExtendedProp('price', lessonPrice);
       activeEvent.setExtendedProp('paymentMethod', pm);
       activeEvent.setExtendedProp('paymentNote', pm === 'other' ? detPaymentNoteForSubmit() : '');
-      if (detGroupCb && !detGroupCb.disabled) {
-        activeEvent.setExtendedProp('isGroupLesson', detGroupCb.checked);
-      }
+      activeEvent.setExtendedProp('isGroupLesson', ep.isGroupLesson === true);
       if (isPaid) {
         const rawAmt = (document.getElementById('detPaidAmount').value || '').trim();
         const v = parseInt(rawAmt, 10);
         activeEvent.setExtendedProp('paidAmount', v);
       }
+      if (data.change_given != null) activeEvent.setExtendedProp('changeGiven', !!data.change_given);
     }
     mergeLessonUpdateIntoDetailUi(data, { showBalanceHint: false });
+    syncDetailModalHeaderState();
+    detRefreshPaymentPanel();
+    _syncDetailPaidActionButtons();
     showDetSavedBanner();
     calendar.refetchEvents();
   } else {
@@ -1977,7 +2756,21 @@ function openFullEditModal(event, scheduleCtx) {
   document.getElementById('lessonEnd').value = toInputTime(getEventEnd(event));
   document.getElementById('lessonNotes').value = p.notes || '';
 
-  setLessonStudentComboboxValue(p.studentId);
+  setLessonStudentComboboxValue(p.studentId, true);
+
+  if (!isVirtualRecurring && !hasRecurringEdit) {
+    const prLesson = p.price != null && p.price !== '' ? p.price : 0;
+    document.getElementById('lessonPrice').value = String(prLesson);
+  }
+
+  const grpModal = document.getElementById('lessonModalIsGroup');
+  if (grpModal) {
+    if (isVirtualRecurring) {
+      grpModal.checked = String(p.studentLessonType || '').toLowerCase() === 'group';
+    } else {
+      grpModal.checked = p.isGroupLesson === true;
+    }
+  }
 
   if (hasRecurringEdit) {
     const freqFromCtx =
@@ -2028,6 +2821,11 @@ function openFullEditModal(event, scheduleCtx) {
   if (editRecurHintEl) editRecurHintEl.classList.remove('d-none');
 
   editModal.show();
+}
+
+function appendLessonModalIsGroup(fd) {
+  const cb = document.getElementById('lessonModalIsGroup');
+  fd.append('is_group_lesson', cb && cb.checked ? 'true' : 'false');
 }
 
 async function saveLesson() {
@@ -2110,6 +2908,7 @@ async function saveLesson() {
         fd.append('new_end', newEnd);
         fd.append('price', document.getElementById('lessonPrice').value);
         fd.append('notes', notesVal);
+        appendLessonModalIsGroup(fd);
         let res = await fetch('/api/lessons/confirm-recurring', { method: 'POST', body: fd });
         if (!res.ok) {
           alert('שגיאה בשמירה. נסי שוב.');
@@ -2182,6 +2981,7 @@ async function saveLesson() {
     fd.append('new_end', newEnd);
     fd.append('price', document.getElementById('lessonPrice').value);
     fd.append('notes', notesVal);
+    appendLessonModalIsGroup(fd);
   } else if (lessonIdRaw) {
     if (pickRecur || pickCustom) {
       const addFd = buildRecurringScheduleAddFormData(studentId, newDate, newStart, newEnd, pickCustom);
@@ -2242,20 +3042,21 @@ async function saveLesson() {
       appendRecurringStartToFormData(fd, newDate);
     } else {
       url = '/api/lessons/create';
-      let defaultPrice = 0;
       const rec = studentsList.find(function (s) {
         return String(s.id) === String(studentId);
       });
-      if (rec && rec.default_price != null && rec.default_price !== '') {
-        const pr = parseInt(String(rec.default_price), 10);
-        if (Number.isFinite(pr) && pr >= 0) defaultPrice = pr;
-      }
+      const isGrpCreate = lessonModalGroupChecked();
+      const rawP = parseInt(String(document.getElementById('lessonPrice').value || '').trim(), 10);
+      let createPrice =
+        Number.isFinite(rawP) && rawP >= 0 ? rawP : effectiveDefaultPriceForStudent(rec, isGrpCreate);
+      if (createPrice <= 0) createPrice = effectiveDefaultPriceForStudent(rec, isGrpCreate);
       fd.append('student_id', studentId);
       fd.append('lesson_date', newDate);
       fd.append('start_time', newStart);
       fd.append('end_time', newEnd);
-      fd.append('price', String(defaultPrice));
+      fd.append('price', String(createPrice));
       fd.append('notes', notesVal);
+      appendLessonModalIsGroup(fd);
     }
   }
 
